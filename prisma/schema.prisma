@@ -40,6 +40,8 @@ model User {
   smsAlertsEnabled   Boolean            @default(false)
   notificationStart  String?
   notificationEnd    String?
+  quietHoursStart    String?
+  quietHoursEnd      String?
   timezone           String?            @default("UTC")
   folderUpvotes      FolderUpvote[]
   sentFolderInvites  FolderInvite[]     @relation("FolderInviteSender")
@@ -57,6 +59,7 @@ model User {
   longestStreak      Int                @default(0)
   lastCheckInDate    String? // stored as "YYYY-MM-DD" UTC
   passkeys           PasskeyCredential[]
+  passkeyEmailOtps   PasskeyEmailOtp[]
   isVerifiedStudent  Boolean            @default(false)
   accurateVotes      Int                @default(0)
   badges             UserBadge[]
@@ -141,6 +144,7 @@ model Venue {
   maxCapacity         Int                 @default(50)
   checkIns            CheckIn[]
   xrAnchors           XRAnchor[]
+  noiseTelemetryReleases NoiseTelemetryRelease[]
   isClaimed           Boolean             @default(false)
   ownerId             String?
   hostMessage         String?
@@ -190,6 +194,19 @@ model VenueRating {
   @@unique([userId, venueId])
   @@index([venueId])
   @@index([createdAt])
+}
+
+model NoiseTelemetryRelease {
+  venueId      String
+  venue        Venue    @relation(fields: [venueId], references: [id], onDelete: Cascade)
+  epochKey     String
+  avgDecibels  Float
+  rdpCosts     Json
+  submissions  Int      @default(1)
+  updatedAt    DateTime @updatedAt
+
+  @@id([venueId, epochKey])
+  @@index([epochKey])
 }
 
 model Favorite {
@@ -475,8 +492,9 @@ model XRAnchor {
   @@index([anchorPersistId])
 }
 
+/// Range-partitioned monthly on `timestamp` (#3362); PK must include the partition key.
 model WifiTelemetry {
-  id         String   @id @default(cuid())
+  id         String   @default(cuid())
   venueId    String
   venue      Venue    @relation(fields: [venueId], references: [id], onDelete: Cascade)
   download   Float
@@ -485,6 +503,7 @@ model WifiTelemetry {
   crowdLevel String
   timestamp  DateTime @default(now())
 
+  @@id([id, timestamp])
   @@index([venueId])
   @@index([timestamp])
   @@index([venueId, timestamp])
@@ -516,8 +535,9 @@ model FlaggedItem {
   @@index([itemId])
 }
 
+/// Range-partitioned monthly on `createdAt` (#3362); PK must include the partition key.
 model AdminAuditLog {
-  id         String   @id @default(cuid())
+  id         String   @default(cuid())
   adminId    String
   admin      User     @relation(fields: [adminId], references: [id], onDelete: Cascade)
   action     String
@@ -526,6 +546,7 @@ model AdminAuditLog {
   details    String?
   createdAt  DateTime @default(now())
 
+  @@id([id, createdAt])
   @@index([createdAt])
 }
 
@@ -710,6 +731,26 @@ model PasskeyCredential {
   expiresAt         DateTime
 
   @@index([userId])
+}
+
+/// Single-use email OTP gating sensitive passkey actions (#1991).
+/// Only an HMAC of the code is stored; rows are scoped to one action on one credential.
+model PasskeyEmailOtp {
+  id           String    @id @default(cuid())
+  userId       String
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// "rotate" | "rename" | "revoke"
+  action       String
+  /// PasskeyCredential.id the code authorises
+  credentialId String
+  codeHash     String
+  attempts     Int       @default(0)
+  expiresAt    DateTime
+  consumedAt   DateTime?
+  createdAt    DateTime  @default(now())
+
+  @@index([userId, action, credentialId])
+  @@index([expiresAt])
 }
 
 model PasskeyChallenge {

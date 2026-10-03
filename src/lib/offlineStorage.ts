@@ -21,7 +21,7 @@ userDoc.on("update", async (update: Uint8Array) => {
 });
 
 const DB_NAME = "worksphere-offline";
-const DB_VERSION = 6;
+const DB_VERSION = 7;
 
 export interface OfflineVenue {
   id: string;
@@ -171,6 +171,16 @@ export async function initOfflineDB(): Promise<IDBDatabase> {
           database.createObjectStore("preference_rankings", {
             keyPath: "id",
           });
+        }
+
+        // Dedicated offline reviews store (Issue #3366)
+        if (!database.objectStoreNames.contains("pendingReviews")) {
+          const reviewStore = database.createObjectStore("pendingReviews", {
+            keyPath: "id",
+          });
+          reviewStore.createIndex("venueId", "venueId", { unique: false });
+          reviewStore.createIndex("status", "status", { unique: false });
+          reviewStore.createIndex("createdAt", "createdAt", { unique: false });
         }
 
         console.log("[OfflineDB] Database schema created");
@@ -1138,4 +1148,43 @@ export async function executeWithRetry<T>(
     }
   }
   throw new Error("Max retries exceeded");
+}
+
+/**
+ * Returns total count of pending mutations queued across IndexedDB stores for offline sync.
+ */
+export async function getTotalPendingMutationsCount(): Promise<number> {
+  if (typeof indexedDB === "undefined") return 0;
+  try {
+    const database = await initOfflineDB();
+    const candidateStores = [
+      "pendingActions",
+      "pendingFavorites",
+      "pendingReviews",
+      "receiptExports",
+    ];
+    const availableStores = candidateStores.filter((name) =>
+      database.objectStoreNames.contains(name),
+    );
+    if (availableStores.length === 0) return 0;
+
+    let total = 0;
+    const tx = database.transaction(availableStores, "readonly");
+    await Promise.all(
+      availableStores.map(
+        (storeName) =>
+          new Promise<void>((resolve) => {
+            const req = tx.objectStore(storeName).count();
+            req.onsuccess = () => {
+              total += req.result || 0;
+              resolve();
+            };
+            req.onerror = () => resolve();
+          }),
+      ),
+    );
+    return total;
+  } catch {
+    return 0;
+  }
 }
