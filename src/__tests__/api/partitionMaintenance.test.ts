@@ -7,6 +7,14 @@ import { GET } from "@/app/api/cron/partition-maintenance/route";
 import { NextRequest } from "next/server";
 import { autoCreateUpcomingPartitions } from "@/lib/partitionMaintenance";
 
+jest.mock("@/lib/db/partitionManager", () => ({
+  runTelemetryPartitionMaintenance: jest.fn().mockResolvedValue({
+    created: [],
+    archived: [],
+    vacuumed: [],
+  }),
+}));
+
 // Mock the partition maintenance functions
 jest.mock("@/lib/partitionMaintenance", () => ({
   autoCreateUpcomingPartitions: jest

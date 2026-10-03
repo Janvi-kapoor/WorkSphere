@@ -4,6 +4,7 @@ import {
   archiveExpiredPushNotificationPartitions,
   checkPartitionHealth,
 } from "@/lib/partitionMaintenance";
+import { runTelemetryPartitionMaintenance } from "@/lib/db/partitionManager";
 import { isAuthorizedCronRequest } from "@/lib/cronAuth";
 
 /**
@@ -27,6 +28,11 @@ export async function GET(request: NextRequest) {
     partitionsCreated?: string[];
     partitionsArchived?: string[];
     healthReport?: unknown;
+    telemetryPartitions?: {
+      created: string[];
+      archived: string[];
+      vacuumed: string[];
+    };
     errors: string[];
   } = { errors: [] };
 
@@ -61,6 +67,15 @@ export async function GET(request: NextRequest) {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     results.errors.push(`checkPartitionHealth: ${msg}`);
+  }
+
+  // 4. Maintain monthly telemetry partitions
+  try {
+    results.telemetryPartitions = await runTelemetryPartitionMaintenance();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    results.errors.push(`runTelemetryPartitionMaintenance: ${msg}`);
+    console.error("[PartitionCron] Failed to maintain telemetry partitions:", err);
   }
 
   const durationMs = Date.now() - startedAt;
