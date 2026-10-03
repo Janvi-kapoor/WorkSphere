@@ -1,41 +1,33 @@
 
 import type * as Party from "partykit/server";
 
-interface WhiteboardMessage {
-  type: string;
-  payload?: any;
-  userId?: string;
-  userName?: string;
-  timestamp?: number;
-}
-
 export default class WhiteboardPartyServer implements Party.Server {
-  private state: Map<string, any> = new Map();
+  private roomDoc: Uint8Array | null = null;
   private activeUsers: Map<string, { userId: string; userName: string; joinedAt: number }> = new Map();
 
   constructor(readonly room: Party.Room) {}
 
   async onConnect(conn: Party.Connection, ctx: Party.ConnectionContext) {
-    console.log(`[PartyKit Whiteboard] Client connected: ${conn.id} in session room: ${this.room.id}`);
-
-    // FIX 1: Send existing board shapes/state to the newly joined user immediately (Hydration)
-    const currentCanvasState = Object.fromEntries(this.state.entries());
-    conn.send(JSON.stringify({
-      type: "WHITEBOARD_HYDRATE",
-      payload: currentCanvasState,
-      timestamp: Date.now()
-    }));
-
-    // Broadcast updated presence
+    console.log(`[PartyKit Whiteboard] Client connected: ${conn.id} in room: ${this.room.id}`);
+    
+    // Send existing Yjs binary document snapshot to newly joined user for instant hydration
+    if (this.roomDoc) {
+      conn.send(this.roomDoc);
+    }
     this.broadcastPresence();
   }
 
-  onMessage(message: string, sender: Party.Connection) {
+  onMessage(message: string | Uint8Array, sender: Party.Connection) {
     try {
-      const msg: WhiteboardMessage = JSON.parse(message);
-      msg.timestamp = Date.now();
+      // Handle native Yjs binary update chunks for sub-100ms CRDT merging
+      if (message instanceof Uint8Array) {
+        this.roomDoc = message;
+        this.room.broadcast(message, [sender.id]);
+        return;
+      }
 
-      // User presence status join track krna
+      // Handle custom signaling messages (e.g., Presence tracking)
+      const msg = JSON.parse(message as string);
       if (msg.type === "PRESENCE_JOIN" && msg.userId) {
         this.activeUsers.set(sender.id, {
           userId: msg.userId,
@@ -43,29 +35,9 @@ export default class WhiteboardPartyServer implements Party.Server {
           joinedAt: Date.now(),
         });
         this.broadcastPresence();
-        return;
       }
-
-      // FIX 2: Handle Shape/Sticky deletion if requested from frontend client
-      if (msg.type === "ELEMENT_DELETE" && msg.payload?.id) {
-        this.state.delete(msg.payload.id);
-        this.room.broadcast(JSON.stringify(msg), [sender.id]);
-        return;
-      }
-
-      // Store state items for conflict-free CRDT / shape sync merging (LWW Strategy)
-      if (msg.payload?.id) {
-        this.state.set(msg.payload.id, {
-          ...msg.payload,
-          lastModifiedBy: msg.userId || sender.id,
-          updatedAt: msg.timestamp,
-        });
-      }
-
-      // High-performance broadcast to all other session participants (sub-100ms requirement)
-      this.room.broadcast(JSON.stringify(msg), [sender.id]);
     } catch (err) {
-      console.error("[PartyKit Whiteboard] Critical error parsing synchronization message:", err);
+      console.error("[PartyKit Whiteboard] Synchronization message handling error:", err);
     }
   }
 
@@ -87,6 +59,4 @@ export default class WhiteboardPartyServer implements Party.Server {
     );
   }
 }
-
-Server.Default = WhiteboardPartyServer;
 
