@@ -135,6 +135,30 @@ export function useMeshCanvasWhiteboard(
 
     try {
       newProvider = new YProvider(PARTYKIT_HOST, roomId, doc, {
+
+      // Additional PartyKit WebSocket message listener for WHITEBOARD_HYDRATE
+      if (newProvider?.ws) {
+        newProvider.ws.addEventListener("message", (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (data.type === "WHITEBOARD_HYDRATE" && data.payload) {
+              doc.transact(() => {
+                const shapes = doc.getArray("shapes");
+                if (shapes.length === 0) {
+                  Object.values(data.payload).forEach((shape: any) => {
+                    const yMap = new Y.Map();
+                    Object.entries(shape).forEach(([k, v]) => yMap.set(k, v));
+                    shapes.push([yMap]);
+                  });
+                }
+              }, "hydration");
+            }
+          } catch (e) {
+            console.error("Failed to parse incoming WebSocket hydration message:", e);
+          }
+        });
+      }
+
         params: token ? { token } : {},
       });
 

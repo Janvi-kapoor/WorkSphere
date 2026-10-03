@@ -1,3 +1,4 @@
+
 import type * as Party from "partykit/server";
 
 interface WhiteboardMessage {
@@ -17,6 +18,14 @@ export default class WhiteboardPartyServer implements Party.Server {
   async onConnect(conn: Party.Connection, ctx: Party.ConnectionContext) {
     console.log(`[PartyKit Whiteboard] Client connected: ${conn.id} in session room: ${this.room.id}`);
 
+    // FIX 1: Send existing board shapes/state to the newly joined user immediately (Hydration)
+    const currentCanvasState = Object.fromEntries(this.state.entries());
+    conn.send(JSON.stringify({
+      type: "WHITEBOARD_HYDRATE",
+      payload: currentCanvasState,
+      timestamp: Date.now()
+    }));
+
     // Broadcast updated presence
     this.broadcastPresence();
   }
@@ -26,6 +35,7 @@ export default class WhiteboardPartyServer implements Party.Server {
       const msg: WhiteboardMessage = JSON.parse(message);
       msg.timestamp = Date.now();
 
+      // User presence status join track krna
       if (msg.type === "PRESENCE_JOIN" && msg.userId) {
         this.activeUsers.set(sender.id, {
           userId: msg.userId,
@@ -36,7 +46,14 @@ export default class WhiteboardPartyServer implements Party.Server {
         return;
       }
 
-      // Store state items for conflict-free CRDT / shape sync merging
+      // FIX 2: Handle Shape/Sticky deletion if requested from frontend client
+      if (msg.type === "ELEMENT_DELETE" && msg.payload?.id) {
+        this.state.delete(msg.payload.id);
+        this.room.broadcast(JSON.stringify(msg), [sender.id]);
+        return;
+      }
+
+      // Store state items for conflict-free CRDT / shape sync merging (LWW Strategy)
       if (msg.payload?.id) {
         this.state.set(msg.payload.id, {
           ...msg.payload,
@@ -72,3 +89,4 @@ export default class WhiteboardPartyServer implements Party.Server {
 }
 
 Server.Default = WhiteboardPartyServer;
+
