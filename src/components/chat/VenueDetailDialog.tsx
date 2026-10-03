@@ -1,6 +1,8 @@
 "use client";
 
 import Tesseract from "tesseract.js";
+import { Languages, Sparkles } from "lucide-react";
+import { useTransition } from "react";
 
 import {
   X,
@@ -59,6 +61,13 @@ import {
   HourlyForecast,
 } from "@/components/noise/NoiseTimelineChart";
 import { CopyToClipboardButton } from "@/components/ui/CopyToClipboardButton";
+import { ExportRatingsCSVButton } from "@/components/analytics/ExportRatingsCSVButton";
+import {
+  subscribeReviewSyncEvents,
+  getQueuedReviews,
+  resolveReviewConflict,
+  QueuedVenueReview,
+} from "@/lib/offlineReviewSync";
 
 interface VenueDetailDialogProps {
   venue: Venue | null;
@@ -228,6 +237,9 @@ export function VenueDetailDialog({
   );
   const [reviews, setReviews] = useState<any[]>([]);
   const [reviewsLoading, setReviewsLoading] = useState(true);
+  const [conflictReview, setConflictReview] =
+    useState<QueuedVenueReview | null>(null);
+  const [resolvingConflict, setResolvingConflict] = useState(false);
   const [menuPhotos, setMenuPhotos] = useState<string[]>([]);
   const [uploadingMenu, setUploadingMenu] = useState(false);
   const [previewPhoto, setPreviewPhoto] = useState<string | null>(null);
@@ -242,6 +254,54 @@ export function VenueDetailDialog({
   const [showLeaderboard, setShowLeaderboard] = useState(false);
 
   // Quick Save state
+  
+  const [selectedVenueLang, setSelectedVenueLang] = useState<string>("EN");
+  const [translatedDescription, setTranslatedDescription] = useState<string>("");
+  const [isTranslatingDesc, startDescTransition] = useTransition();
+  const [descTranslationError, setDescTranslationError] = useState<string | null>(null);
+  const [descriptionCache, setDescriptionCache] = useState<Record<string, string>>({});
+
+  const handleVenueDescriptionTranslation = async (targetLang: string) => {
+    if (!venue) return;
+    setSelectedVenueLang(targetLang);
+    setDescTranslationError(null);
+
+    const rawDescription = venue.description || `Analysis based on Multi-Agent telemetry suggests this ${venue.category || "workspace"} is optimal for collaborative sessions.`;
+
+    if (targetLang === "EN") {
+      setTranslatedDescription("");
+      return;
+    }
+
+    const cacheKey = `${venue.id}-${targetLang}`;
+    if (descriptionCache[cacheKey]) {
+      setTranslatedDescription(descriptionCache[cacheKey]);
+      return;
+    }
+
+    startDescTransition(async () => {
+      try {
+        const response = await fetch(`/api/venues/${encodeURIComponent(venue.id)}/translate`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ targetLang, text: rawDescription }),
+        });
+
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.error || "Failed to translate venue description");
+        }
+
+        const translatedText = data.translatedDescription || rawDescription;
+        setTranslatedDescription(translatedText);
+        setDescriptionCache((prev) => ({ ...prev, [cacheKey]: translatedText }));
+      } catch (err: any) {
+        console.error("Venue Description Translation Error:", err);
+        setDescTranslationError(err.message || "Translation unavailable.");
+      }
+    });
+  };
+
   const [quickSaveLoading, setQuickSaveLoading] = useState(false);
 
   const handleQuickSave = async () => {
@@ -696,7 +756,7 @@ export function VenueDetailDialog({
     };
   }, [venue, isOpen]);
 
-  // Fetch reviews on dialog open / venue change to have stats ready
+  // Fetch reviews on dialog open / venue change and subscribe to offline sync events
   useEffect(() => {
     if (!venue || !isOpen) return;
     setReviewsLoading(true);
@@ -707,7 +767,63 @@ export function VenueDetailDialog({
       })
       .catch((err) => console.error(err))
       .finally(() => setReviewsLoading(false));
+
+    // Check for any pending review conflicts for this venue in IndexedDB
+    getQueuedReviews()
+      .then((items) => {
+        const found = items.find(
+          (i) => i.venueId === venue.id && i.status === "CONFLICT",
+        );
+        setConflictReview(found || null);
+      })
+      .catch(() => {});
+
+    // Listen for background sync success or conflict notifications without page refresh
+    const unsubscribe = subscribeReviewSyncEvents((event) => {
+      if (!event.venueId || event.venueId === venue.id) {
+        if (event.type === "REVIEW_SYNC_SUCCESS") {
+          fetch(`/api/venues/${encodeURIComponent(venue.id)}/reviews`)
+            .then((r) => r.json())
+            .then((data) => {
+              if (data.reviews) setReviews(data.reviews);
+            })
+            .catch(() => {});
+          setConflictReview(null);
+        } else if (event.type === "REVIEW_SYNC_CONFLICT") {
+          getQueuedReviews()
+            .then((items) => {
+              const found = items.find(
+                (i) => i.venueId === venue.id && i.status === "CONFLICT",
+              );
+              setConflictReview(found || null);
+            })
+            .catch(() => {});
+        }
+      }
+    });
+
+    return () => {
+      unsubscribe();
+    };
   }, [venue, isOpen]);
+
+  const handleResolveConflict = async (choice: "KEEP_LOCAL" | "USE_REMOTE") => {
+    if (!conflictReview || !venue) return;
+    setResolvingConflict(true);
+    try {
+      await resolveReviewConflict(conflictReview.id, choice);
+      setConflictReview(null);
+      const res = await fetch(
+        `/api/venues/${encodeURIComponent(venue.id)}/reviews`,
+      );
+      const data = await res.json();
+      if (data.reviews) setReviews(data.reviews);
+    } catch (err) {
+      console.error("Failed to resolve review conflict:", err);
+    } finally {
+      setResolvingConflict(false);
+    }
+  };
 
   // Effect 3: Fetch predictions and menu photos based on active tab
   useEffect(() => {
@@ -1090,6 +1206,52 @@ export function VenueDetailDialog({
         <div className="p-8 bg-transparent overflow-y-auto flex-1 min-h-0 text-zinc-100">
           {activeTab === "overview" && (
             <>
+
+              {/* MULTI-LANGUAGE VENUE DESCRIPTION TRANSLATOR */}
+              <div className="mb-6 p-5 bg-zinc-800/50 border border-zinc-700/50 rounded-2xl shadow-sm space-y-4">
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 pb-3 border-b border-zinc-700">
+                  <div className="flex items-center gap-2">
+                    <Sparkles className="w-5 h-5 text-indigo-400" />
+                    <h3 className="font-semibold text-lg text-white">Venue Description</h3>
+                  </div>
+
+                  <div className="flex items-center gap-2 w-full sm:w-auto">
+                    <Languages className="w-4 h-4 text-zinc-400 shrink-0" />
+                    <select
+                      value={selectedVenueLang}
+                      onChange={(e) => handleVenueDescriptionTranslation(e.target.value)}
+                      disabled={isTranslatingDesc}
+                      aria-label="Select venue description language"
+                      className="w-full sm:w-48 text-sm rounded-md border border-zinc-700 bg-zinc-900 text-zinc-200 px-3 py-1.5 shadow-sm focus:outline-none focus:ring-1 focus:ring-indigo-500 disabled:opacity-50"
+                    >
+                      {[
+                        { code: "EN", label: "English" },
+                        { code: "ES", label: "Spanish" },
+                        { code: "FR", label: "French" },
+                        { code: "DE", label: "German" },
+                        { code: "HI", label: "Hindi" },
+                        { code: "JA", label: "Japanese" },
+                        { code: "ZH", label: "Chinese (Simplified)" },
+                      ].map((loc) => (
+                        <option key={loc.code} value={loc.code}>
+                          {loc.label}
+                        </option>
+                      ))}
+                    </select>
+                    {isTranslatingDesc && <Loader2 className="w-4 h-4 animate-spin text-indigo-400" />}
+                  </div>
+                </div>
+
+                <div className="relative min-h-[60px] text-zinc-300 leading-relaxed text-sm">
+                  {descTranslationError && (
+                    <p className="text-xs text-amber-400 mb-2 font-medium">{descTranslationError}</p>
+                  )}
+                  <p className="whitespace-pre-line">
+                    {translatedDescription || venue.description || `Analysis based on Multi-Agent telemetry suggests this ${venue.category || "workspace"} is optimal for collaborative sessions.`}
+                  </p>
+                </div>
+              </div>
+
               {/* Verified Host Pinned Message */}
               {venue.isClaimed && venue.hostMessage && (
                 <div className="mb-6 p-5 bg-gradient-to-r from-emerald-500/10 to-teal-500/10 border border-emerald-500/20 rounded-2xl shadow-sm">
@@ -1260,6 +1422,7 @@ export function VenueDetailDialog({
                   <RatingDistribution
                     reviews={reviews}
                     activeMetric={activeDistribution}
+                    venueName={venue.name}
                     onClose={() => setActiveDistribution(null)}
                   />
                 </div>
@@ -1936,6 +2099,52 @@ export function VenueDetailDialog({
 
           {activeTab === "reviews" && (
             <div className="space-y-4">
+              {conflictReview && (
+                <div className="p-4 border border-amber-500/30 bg-amber-500/10 rounded-2xl space-y-3">
+                  <div className="flex items-start gap-2.5">
+                    <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+                    <div className="space-y-1">
+                      <p className="text-xs font-bold text-amber-200">
+                        Review Conflict Detected
+                      </p>
+                      <p className="text-[11px] text-amber-300/80 leading-relaxed">
+                        This review was modified on the server while you were offline.
+                        Choose whether to overwrite with your offline review or keep the server version.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 pt-1">
+                    <button
+                      onClick={() => handleResolveConflict("KEEP_LOCAL")}
+                      disabled={resolvingConflict}
+                      className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-amber-500 hover:bg-amber-600 text-black transition-colors disabled:opacity-50"
+                    >
+                      {resolvingConflict
+                        ? "Resolving..."
+                        : "Keep Local (Overwrite)"}
+                    </button>
+                    <button
+                      onClick={() => handleResolveConflict("USE_REMOTE")}
+                      disabled={resolvingConflict}
+                      className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-white/10 hover:bg-white/20 text-white transition-colors disabled:opacity-50"
+                    >
+                      Use Remote (Discard Local)
+                    </button>
+                  </div>
+                </div>
+              )}
+              {reviews.length > 0 && (
+                <div className="flex items-center justify-between pb-3 border-b border-white/10">
+                  <span className="text-[11px] font-black uppercase tracking-wider text-zinc-400">
+                    {reviews.length} {reviews.length === 1 ? "Review" : "Reviews"}
+                  </span>
+                  <ExportRatingsCSVButton
+                    ratings={reviews}
+                    venueName={venue.name}
+                    variant="compact"
+                  />
+                </div>
+              )}
               {reviewsLoading ? (
                 <div className="space-y-3">
                   {[0, 1, 2].map((i) => (

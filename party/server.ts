@@ -1,5 +1,15 @@
 import type * as Party from "partykit/server";
 import { onConnect as onConnectYjs } from "y-partykit";
+
+/** Yjs rooms for collaborative collection notes: `folder-notes-{folderId}` (#3360). */
+export const FOLDER_NOTES_ROOM_PREFIX = "folder-notes-";
+
+/** Folder id for `folder-{id}` and `folder-notes-{id}` rooms (other rooms: the room id). */
+export function folderIdFromRoom(roomId: string): string {
+  if (roomId.startsWith(FOLDER_NOTES_ROOM_PREFIX)) return roomId.slice(FOLDER_NOTES_ROOM_PREFIX.length);
+  if (roomId.startsWith("folder-")) return roomId.slice("folder-".length);
+  return roomId;
+}
 import { verifyToken } from "@clerk/backend";
 
 type SeatStatus = "green" | "yellow" | "red";
@@ -43,6 +53,25 @@ function seatStatusFor(count: number, capacity: number): SeatStatus {
   return "green";
 }
 
+export interface ReplayableSessionEvent {
+  sequenceId: number;
+  epoch: number;
+  messageId: string;
+  type: string;
+  payload: any;
+  timestamp: number;
+  senderId?: string;
+}
+
+export interface PresenceUser {
+  userId: string;
+  userName: string;
+  avatarUrl?: string;
+  cursorPosition?: number | null;
+  isTyping?: boolean;
+  lastActive: number;
+}
+
 export default class WorkspaceServer implements Party.Server {
   // Real-time seat availability layer (#703): one check-in per connection,
   // keyed by connection id so we can always find & clear a user's previous
@@ -51,10 +80,18 @@ export default class WorkspaceServer implements Party.Server {
   private seatCheckinLocks = new Set<string>(); // Prevents concurrent ops per connection
   private serverEpoch = Date.now();
   private sequenceId = 0;
+  private eventHistory: ReplayableSessionEvent[] = [];
+  private readonly maxHistorySize = 500;
+  private processedMessageIds = new Set<string>();
+  private readonly maxProcessedIds = 1000;
 
   // Music genre state per venue (#2077): tracks the current reported genre
   // for each venueId. Overwritten on each update — last reporter wins.
   private venueMusic = new Map<string, VenueMusicState>();
+
+  // Active typing presence protocol (#3438)
+  private roomPresence = new Map<string, PresenceUser>();
+  private presenceCleanupInterval?: ReturnType<typeof setInterval>;
 
   private heartbeatInterval?: ReturnType<typeof setInterval>;
   private connectionStates = new Map<
@@ -63,6 +100,11 @@ export default class WorkspaceServer implements Party.Server {
   >();
 
   constructor(readonly room: Party.Room) {
+    // 5-second sweep for active typing presence cleanup (>15s inactivity) (#3438)
+    this.presenceCleanupInterval = setInterval(() => {
+      this.pruneInactivePresence();
+    }, 5000);
+
     this.heartbeatInterval = setInterval(() => {
       const now = Date.now();
       for (const [connId, state] of this.connectionStates.entries()) {
@@ -81,7 +123,7 @@ export default class WorkspaceServer implements Party.Server {
           continue;
         }
 
-        if (now - state.lastPong > 45000) {
+        if (now - state.lastPong >= 45000) {
           // 45-second timeout: broadcast departure and force-close stale socket
           if (state.name) {
             this.room.broadcast(
@@ -103,12 +145,40 @@ export default class WorkspaceServer implements Party.Server {
     }, 15000);
   }
 
+  pruneInactivePresence(now: number = Date.now()): number {
+    let pruned = 0;
+    for (const [connId, presence] of this.roomPresence.entries()) {
+      const conn = this.room.getConnection(connId);
+      const isInactive = now - presence.lastActive > 15000;
+      if (!conn || isInactive) {
+        this.roomPresence.delete(connId);
+        this.room.broadcast(
+          JSON.stringify({
+            type: "presence_remove",
+            userId: presence.userId,
+            userName: presence.userName,
+            connId,
+          }),
+        );
+        pruned++;
+      }
+    }
+    return pruned;
+  }
+
+  getRoomPresence(): PresenceUser[] {
+    return Array.from(this.roomPresence.values());
+  }
+
   async onConnect(conn: Party.Connection, ctx: Party.ConnectionContext) {
     const url = new URL(ctx.request.url);
     const token = url.searchParams.get("token");
 
     let isViewer = false;
     let verifiedUserId: string | undefined;
+    // Collection notes (#3360) hold private text: only folder members may join.
+    const isFolderNotesRoom = this.room.id.startsWith(FOLDER_NOTES_ROOM_PREFIX);
+    let isFolderMember = false;
 
     if (token) {
       try {
@@ -121,17 +191,18 @@ export default class WorkspaceServer implements Party.Server {
         if (this.room.id.startsWith("canvas-")) {
           isViewer = false;
         } else {
-          // Extract folder ID if room is named "folder-{id}"
-          let folderId = this.room.id;
-          if (folderId.startsWith("folder-")) {
-            folderId = folderId.replace("folder-", "");
-          }
+          const folderId = folderIdFromRoom(this.room.id);
 
           // Fetch user's role in the folder via Next.js internal API to avoid Edge Prisma errors
           const NEXT_PUBLIC_APP_URL =
             process.env.NEXT_PUBLIC_APP_URL || "http://127.0.0.1:3000";
+          const sharedSecret =
+            process.env.PARTYKIT_AUTH_SECRET || process.env.PARTYKIT_SHARED_SECRET;
           const authRes = await fetch(
-            `${NEXT_PUBLIC_APP_URL}/api/partykit/auth?userId=${userId}&folderId=${folderId}`,
+            `${NEXT_PUBLIC_APP_URL}/api/partykit/auth?userId=${encodeURIComponent(userId)}&folderId=${encodeURIComponent(folderId)}`,
+            // The auth route rejects calls without the shared secret; without
+            // this header every lookup failed and all users became viewers.
+            sharedSecret ? { headers: { Authorization: `Bearer ${sharedSecret}` } } : undefined,
           );
 
           if (authRes.ok) {
@@ -139,6 +210,7 @@ export default class WorkspaceServer implements Party.Server {
             if (authData.role === "MEMBER" || authData.role === "VIEWER") {
               isViewer = true;
             }
+            isFolderMember = authData.member === true || authData.role === "OWNER";
           } else {
             isViewer = true;
           }
@@ -150,6 +222,11 @@ export default class WorkspaceServer implements Party.Server {
       }
     } else {
       isViewer = true;
+    }
+
+    if (isFolderNotesRoom && !isFolderMember) {
+      conn.close(4003, "Forbidden: collection notes are limited to members");
+      return;
     }
 
     conn.setState({
@@ -171,14 +248,40 @@ export default class WorkspaceServer implements Party.Server {
       );
     }
 
+    // Check if client provided last acknowledged sequence on connection URL
+    const lastSeqParam = url.searchParams.get("lastSeq");
+    const epochParam = url.searchParams.get("epoch");
+    if (lastSeqParam !== null) {
+      const lastSeq = parseInt(lastSeqParam, 10);
+      const epoch = epochParam ? parseInt(epochParam, 10) : undefined;
+      if (!isNaN(lastSeq) && lastSeq > 0) {
+        this.handleSyncRequest(conn, lastSeq, epoch);
+      }
+    }
+
     // Yjs connection for shared state (messages, markers)
     // Pass readOnly option so y-partykit automatically drops incoming updates
-    onConnectYjs(conn, this.room, {
-      gc: true,
-      readOnly: isViewer,
-    });
+    onConnectYjs(
+      conn,
+      this.room,
+      isFolderNotesRoom
+        ? // Notes must outlive the room's in-memory lifetime (#3360);
+          // y-partykit requires gc off when persisting.
+          { gc: false, readOnly: isViewer, persist: { mode: "snapshot" } }
+        : { gc: true, readOnly: isViewer },
+    );
 
     this.connectionStates.set(conn.id, { lastPong: Date.now() });
+
+    // Send initial presence state to newly connected client (#3438)
+    if (this.roomPresence.size > 0) {
+      conn.send(
+        JSON.stringify({
+          type: "presence_state",
+          users: Array.from(this.roomPresence.values()),
+        }),
+      );
+    }
 
     // Also handle simple presence via standard WebSockets
     conn.addEventListener("message", (event: { data: unknown }) => {
@@ -209,6 +312,121 @@ export default class WorkspaceServer implements Party.Server {
       if (parsed.type === "typing") {
         this.room.broadcast(message, [sender.id]);
         return;
+      }
+
+      // Room awareness presence updates (#3438)
+      if (parsed.type === "presence_update") {
+        const presence: PresenceUser = {
+          userId: String(
+            parsed.userId || (sender.state as any)?.userId || sender.id,
+          ),
+          userName: String(
+            parsed.userName ||
+              (sender.state as any)?.name ||
+              "Collaborator",
+          ),
+          avatarUrl: parsed.avatarUrl ? String(parsed.avatarUrl) : undefined,
+          cursorPosition:
+            typeof parsed.cursorPosition === "number"
+              ? parsed.cursorPosition
+              : null,
+          isTyping: Boolean(parsed.isTyping),
+          lastActive:
+            typeof parsed.lastActive === "number"
+              ? parsed.lastActive
+              : Date.now(),
+        };
+
+        this.roomPresence.set(sender.id, presence);
+
+        this.room.broadcast(
+          JSON.stringify({
+            type: "presence_update",
+            ...presence,
+            connId: sender.id,
+          }),
+          [sender.id],
+        );
+        return;
+      }
+
+      // Presence heartbeat (every 5s from client) (#3438)
+      if (parsed.type === "presence_heartbeat") {
+        const now = Date.now();
+        const existing = this.roomPresence.get(sender.id);
+        if (existing) {
+          existing.lastActive = now;
+          if (typeof parsed.cursorPosition === "number") {
+            existing.cursorPosition = parsed.cursorPosition;
+          }
+          if (typeof parsed.isTyping === "boolean") {
+            existing.isTyping = parsed.isTyping;
+          }
+        } else if (parsed.userId) {
+          this.roomPresence.set(sender.id, {
+            userId: String(parsed.userId),
+            userName: String(parsed.userName || "Collaborator"),
+            avatarUrl: parsed.avatarUrl ? String(parsed.avatarUrl) : undefined,
+            cursorPosition:
+              typeof parsed.cursorPosition === "number"
+                ? parsed.cursorPosition
+                : null,
+            isTyping: Boolean(parsed.isTyping),
+            lastActive: now,
+          });
+        }
+        return;
+      }
+
+      if (
+        parsed.type === "request_presence" ||
+        parsed.type === "presence_sync"
+      ) {
+        sender.send(
+          JSON.stringify({
+            type: "presence_state",
+            users: Array.from(this.roomPresence.values()),
+          }),
+        );
+        return;
+      }
+
+      if (parsed.type === "sync_request") {
+        const lastSeq = typeof parsed.lastSeq === "number" ? parsed.lastSeq : 0;
+        const epoch = typeof parsed.epoch === "number" ? parsed.epoch : undefined;
+        this.handleSyncRequest(sender, lastSeq, epoch);
+        return;
+      }
+
+      if (parsed.type === "ack_seq") {
+        const lastSeq = typeof parsed.lastSeq === "number" ? parsed.lastSeq : parsed.seq;
+        sender.setState({
+          ...((sender.state as Record<string, unknown>) ?? {}),
+          lastAckSeq: lastSeq,
+        });
+        return;
+      }
+
+      // Deduplication for idempotent retry messages
+      const msgId = parsed.messageId || parsed.message?.id;
+      if (msgId) {
+        if (this.processedMessageIds.has(msgId)) {
+          sender.send(
+            JSON.stringify({
+              type: "msg_ack",
+              messageId: msgId,
+              status: "duplicate",
+              sequenceId: this.sequenceId,
+              epoch: this.serverEpoch,
+            }),
+          );
+          return;
+        }
+        this.processedMessageIds.add(msgId);
+        if (this.processedMessageIds.size > this.maxProcessedIds) {
+          const oldest = this.processedMessageIds.values().next().value;
+          if (oldest) this.processedMessageIds.delete(oldest);
+        }
       }
 
       if (parsed.type === "ping") {
@@ -311,7 +529,7 @@ export default class WorkspaceServer implements Party.Server {
 
       // Broadcast all other string messages to other clients
       // (Yjs handles ArrayBuffer messages automatically via onConnect)
-      this.room.broadcast(message, [sender.id]);
+      this.recordAndBroadcast(sender, parsed.type || "message", parsed, msgId);
     } catch {
       // Not JSON, ignore or broadcast if EDITOR
       if (state.role !== "VIEWER") {
@@ -325,6 +543,19 @@ export default class WorkspaceServer implements Party.Server {
   onClose(conn: Party.Connection) {
     this.connectionStates.delete(conn.id);
     this.handleSeatCheckout(conn);
+
+    if (this.roomPresence.has(conn.id)) {
+      const presence = this.roomPresence.get(conn.id)!;
+      this.roomPresence.delete(conn.id);
+      this.room.broadcast(
+        JSON.stringify({
+          type: "presence_remove",
+          userId: presence.userId,
+          userName: presence.userName,
+          connId: conn.id,
+        }),
+      );
+    }
   }
 
   private handleSeatCheckin(
@@ -482,20 +713,118 @@ export default class WorkspaceServer implements Party.Server {
     const count = this.countForVenue(venueId);
     const capacity = this.capacityForVenue(venueId);
     const music = this.venueMusic.get(venueId);
+    const seatMsg = {
+      venueId,
+      count,
+      capacity,
+      status: seatStatusFor(count, capacity),
+      musicGenre: music?.genre ?? null,
+      musicGenreUpdatedAt: music?.updatedAt ?? null,
+    };
+    this.recordAndBroadcast(null, "seat_update", seatMsg);
+  }
+
+  private recordAndBroadcast(
+    sender: Party.Connection | null,
+    type: string,
+    payload: Record<string, unknown>,
+    messageId?: string,
+  ): ReplayableSessionEvent {
     this.sequenceId++;
-    this.room.broadcast(
+    const resolvedMessageId =
+      messageId ||
+      (typeof payload.messageId === "string" ? payload.messageId : undefined) ||
+      (typeof (payload as any).message?.id === "string"
+        ? (payload as any).message.id
+        : undefined) ||
+      `evt-${this.serverEpoch}-${this.sequenceId}`;
+
+    const enriched = {
+      ...payload,
+      type,
+      epoch: this.serverEpoch,
+      sequenceId: this.sequenceId,
+      messageId: resolvedMessageId,
+    };
+    const wireMessage = JSON.stringify(enriched);
+
+    const eventRecord: ReplayableSessionEvent = {
+      sequenceId: this.sequenceId,
+      epoch: this.serverEpoch,
+      messageId: resolvedMessageId,
+      type,
+      payload: enriched,
+      timestamp: Date.now(),
+      senderId: sender?.id,
+    };
+
+    this.eventHistory.push(eventRecord);
+    if (this.eventHistory.length > this.maxHistorySize) {
+      this.eventHistory.shift();
+    }
+
+    if (sender) {
+      this.room.broadcast(wireMessage, [sender.id]);
+    } else {
+      this.room.broadcast(wireMessage);
+    }
+
+    return eventRecord;
+  }
+
+  private handleSyncRequest(
+    conn: Party.Connection,
+    lastSeq: number,
+    clientEpoch?: number,
+  ) {
+    if (typeof clientEpoch === "number" && clientEpoch !== this.serverEpoch) {
+      this.sendFullSyncFallback(conn, "epoch_mismatch");
+      return;
+    }
+
+    if (lastSeq >= this.sequenceId) {
+      conn.send(
+        JSON.stringify({
+          type: "sync_ack",
+          epoch: this.serverEpoch,
+          latestSeq: this.sequenceId,
+          status: "synchronized",
+        }),
+      );
+      return;
+    }
+
+    const oldestEvent = this.eventHistory[0];
+    const oldestSeq = oldestEvent ? oldestEvent.sequenceId : this.sequenceId + 1;
+
+    if (lastSeq + 1 < oldestSeq) {
+      this.sendFullSyncFallback(conn, "history_unavailable");
+      return;
+    }
+
+    const missedEvents = this.eventHistory.filter(
+      (e) => e.sequenceId > lastSeq && e.sequenceId <= this.sequenceId,
+    );
+
+    conn.send(
       JSON.stringify({
-        type: "seat_update",
-        venueId,
-        count,
-        capacity,
-        status: seatStatusFor(count, capacity),
-        // Include current music genre in seat updates so clients get it
-        // even if they missed the dedicated music_genre_broadcast (#2077)
-        musicGenre: music?.genre ?? null,
-        musicGenreUpdatedAt: music?.updatedAt ?? null,
+        type: "sync_replay",
         epoch: this.serverEpoch,
-        sequenceId: this.sequenceId,
+        fromSeq: lastSeq + 1,
+        toSeq: this.sequenceId,
+        events: missedEvents.map((e) => e.payload),
+      }),
+    );
+  }
+
+  private sendFullSyncFallback(conn: Party.Connection, reason: string) {
+    conn.send(
+      JSON.stringify({
+        type: "sync_fallback",
+        reason,
+        epoch: this.serverEpoch,
+        latestSeq: this.sequenceId,
+        seats: this.seatSummary(),
       }),
     );
   }
