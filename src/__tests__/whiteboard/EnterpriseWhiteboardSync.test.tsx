@@ -1,74 +1,107 @@
-/**
- * Comprehensive Enterprise Test Suite for Collaborative Whiteboard (Issue #2167)
- * Validates Yjs CRDT synchronization, PartyKit mesh messaging,
- * sub-100ms latency benchmarks, multi-user presence states, and remote cursors.
- */
+import { describe, it, expect } from "@jest/globals";
+import * as Y from "yjs";
 
-import { describe, it, expect, beforeEach } from "@jest/globals";
-import { meshSendTimestamps } from "../../../src/hooks/useMeshCanvasWhiteboard";
+describe("Collaborative Whiteboard Yjs CRDT Sync (#2167)", () => {
+  it("applies a binary Yjs update correctly", () => {
+    const source = new Y.Doc();
+    const target = new Y.Doc();
 
-describe("Collaborative Whiteboard Enterprise Suite (#2167)", () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
-    meshSendTimestamps.clear();
+    const shapes =
+      source.getArray<Y.Map<unknown>>("shapes");
+
+    source.transact(() => {
+      const shape = new Y.Map<unknown>();
+
+      shape.set("id", "shape-1");
+      shape.set("type", "rect");
+
+      shapes.push([shape]);
+    });
+
+    const update = Y.encodeStateAsUpdate(source);
+
+    expect(update).toBeInstanceOf(Uint8Array);
+
+    Y.applyUpdate(target, update);
+
+    const targetShapes =
+      target.getArray<Y.Map<unknown>>("shapes");
+
+    expect(targetShapes.length).toBe(1);
+
+    const syncedShape = targetShapes.get(0);
+
+    expect(syncedShape.get("id")).toBe("shape-1");
+    expect(syncedShape.get("type")).toBe("rect");
   });
 
-  it("handles high-resolution mesh synchronization timestamp logging", () => {
-    const updateId = "test-sync-marker-998";
-    const timestamp = performance.now();
-    meshSendTimestamps.set(updateId, timestamp);
+  it("converges after concurrent edits without data loss", () => {
+    const docA = new Y.Doc();
+    const docB = new Y.Doc();
 
-    expect(meshSendTimestamps.has(updateId)).toBe(true);
-    expect(meshSendTimestamps.get(updateId)).toEqual(timestamp);
+    docA.getArray<string>("shapes").push(["shapeA"]);
+    docB.getArray<string>("shapes").push(["shapeB"]);
+
+    const updateA = Y.encodeStateAsUpdate(docA);
+    const updateB = Y.encodeStateAsUpdate(docB);
+
+    // Exchange both independent updates.
+    Y.applyUpdate(docA, updateB);
+    Y.applyUpdate(docB, updateA);
+
+    expect(
+      docA.getArray<string>("shapes").length,
+    ).toBe(2);
+
+    expect(
+      docB.getArray<string>("shapes").length,
+    ).toBe(2);
+
+    expect(
+      docA.getArray<string>("shapes").toJSON(),
+    ).toEqual(
+      docB.getArray<string>("shapes").toJSON(),
+    );
   });
 
-  it("validates sub-100ms latency threshold requirement for mesh updates", () => {
-    const sentTime = performance.now();
-    const ackTime = sentTime + 42; // 42ms (well under 100ms requirement)
+  it("synchronizes sticky-note data through Yjs", () => {
+    const source = new Y.Doc();
+    const target = new Y.Doc();
 
-    const latency = ackTime - sentTime;
-    expect(latency).toBeLessThan(100);
-  });
+    const shapes =
+      source.getArray<Y.Map<unknown>>("shapes");
 
-  it("supports multiple tool switching including pen, eraser, shapes, and sticky notes", () => {
-    const tools = ["pen", "eraser", "rect", "circle", "line", "sticky"];
-    expect(tools).toContain("sticky");
-    expect(tools).toContain("eraser");
-    expect(tools).toContain("pen");
-    expect(tools).toContain("rect");
-    expect(tools).toContain("circle");
-    expect(tools).toContain("line");
-  });
+    source.transact(() => {
+      const sticky = new Y.Map<unknown>();
 
-  it("simulates remote user cursor synchronization and presence tracking", () => {
-    const mockCursor = {
-      userId: "user-abc-123",
-      userName: "Satyam",
-      x: 450,
-      y: 300,
-      color: "#a855f7",
-      lastActive: Date.now(),
-    };
-    expect(mockCursor.x).toBeGreaterThanOrEqual(0);
-    expect(mockCursor.y).toBeGreaterThanOrEqual(0);
-    expect(mockCursor.userName).toBeDefined();
-    expect(mockCursor.userId).toBe("user-abc-123");
-  });
+      sticky.set("id", "sticky-1");
+      sticky.set("type", "sticky");
+      sticky.set(
+        "text",
+        "Collaborative whiteboard test",
+      );
+      sticky.set("x", 120);
+      sticky.set("y", 240);
 
-  it("verifies session state payload serialization and deserialization integrity", () => {
-    const payload = {
-      id: "sticky-note-99",
-      type: "sticky",
-      text: "Collaborative whiteboard requirements check passed.",
-      x: 120,
-      y: 240,
-    };
+      shapes.push([sticky]);
+    });
 
-    const serialized = JSON.stringify(payload);
-    const deserialized = JSON.parse(serialized);
+    Y.applyUpdate(
+      target,
+      Y.encodeStateAsUpdate(source),
+    );
 
-    expect(deserialized.id).toEqual(payload.id);
-    expect(deserialized.type).toEqual(payload.type);
-    expect(deserialized.text).toEqual(payload.text);
+    const syncedSticky =
+      target
+        .getArray<Y.Map<unknown>>("shapes")
+        .get(0);
+
+    expect(syncedSticky.get("id")).toBe("sticky-1");
+    expect(syncedSticky.get("type")).toBe("sticky");
+    expect(syncedSticky.get("text")).toBe(
+      "Collaborative whiteboard test",
+    );
+    expect(syncedSticky.get("x")).toBe(120);
+    expect(syncedSticky.get("y")).toBe(240);
   });
 });
