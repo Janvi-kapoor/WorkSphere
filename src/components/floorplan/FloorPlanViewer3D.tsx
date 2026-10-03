@@ -16,34 +16,79 @@ export type SeatProps = {
   available: boolean;
 };
 
-interface FloorPlanViewer3DProps {
+type ActiveSeatHold = {
+  heldBy: string;
+  heldByName?: string;
+  expiresAt: number;
+  isSelf: boolean;
+  remainingSeconds?: number;
+};
+
+export interface FloorPlanViewer3DProps {
   seats: SeatProps[];
   selectedSeat: string | null;
   onSelectSeat: (id: string | null) => void;
+  activeHolds?: Record<string, ActiveSeatHold>;
+  onHeldSeatClick?: (
+    seat: SeatProps,
+    hold: { heldByName?: string; remainingSeconds?: number },
+  ) => void;
 }
 
 export default function FloorPlanViewer3D({
   seats,
   selectedSeat,
   onSelectSeat,
+  activeHolds = {},
+  onHeldSeatClick,
 }: FloorPlanViewer3DProps) {
   const [hoveredSeat, setHoveredSeat] = useState<string | null>(null);
   const [webglUnavailable, setWebglUnavailable] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<FloorplanRenderer | null>(null);
+
+  const seatsRef = useRef(seats);
+  const activeHoldsRef = useRef(activeHolds);
   const onSelectSeatRef = useRef(onSelectSeat);
+  const onHeldSeatClickRef = useRef(onHeldSeatClick);
+
+  seatsRef.current = seats;
+  activeHoldsRef.current = activeHolds;
   onSelectSeatRef.current = onSelectSeat;
+  onHeldSeatClickRef.current = onHeldSeatClick;
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
     try {
-      const renderer = new FloorplanRenderer(canvas, {
-        onSelectSeat: (seatId) => onSelectSeatRef.current(seatId),
+      rendererRef.current = new FloorplanRenderer(canvas, {
+        onSelectSeat: (seatId) => {
+          if (!seatId) {
+            onSelectSeatRef.current(null);
+            return;
+          }
+
+          const seat = seatsRef.current.find((item) => item.id === seatId);
+          if (!seat) return;
+
+          const hold = activeHoldsRef.current[seatId];
+          const isHeldByOther =
+            !!hold &&
+            !hold.isSelf &&
+            (hold.remainingSeconds === undefined || hold.remainingSeconds > 0);
+
+          if (isHeldByOther) {
+            onHeldSeatClickRef.current?.(seat, {
+              heldByName: hold.heldByName,
+              remainingSeconds: hold.remainingSeconds,
+            });
+          } else if (seat.available) {
+            onSelectSeatRef.current(seat.id);
+          }
+        },
         onHoverSeat: setHoveredSeat,
       });
-      rendererRef.current = renderer;
     } catch {
       setWebglUnavailable(true);
     }
@@ -72,6 +117,7 @@ export default function FloorPlanViewer3D({
     }
 
     let handled = false;
+
     switch (event.key) {
       case "ArrowLeft":
         rendererRef.current?.pan(0.8, 0);
@@ -103,7 +149,7 @@ export default function FloorPlanViewer3D({
         handled = true;
         break;
       case "Escape":
-        onSelectSeat(null);
+        onSelectSeatRef.current(null);
         handled = true;
         break;
       default:
@@ -117,6 +163,14 @@ export default function FloorPlanViewer3D({
   };
 
   const hoveredSeatData = seats.find((seat) => seat.id === hoveredSeat);
+  const hoveredHold = hoveredSeatData
+    ? activeHolds[hoveredSeatData.id]
+    : undefined;
+  const hoveredSeatHeldByOther =
+    !!hoveredHold &&
+    !hoveredHold.isSelf &&
+    (hoveredHold.remainingSeconds === undefined ||
+      hoveredHold.remainingSeconds > 0);
 
   return (
     <div
@@ -143,13 +197,20 @@ export default function FloorPlanViewer3D({
           <span className="h-2.5 w-2.5 rounded-sm bg-[#ec4899]" /> Phone booth
         </span>
         <span className="flex items-center gap-1.5">
+          <span className="h-2.5 w-2.5 rounded-sm bg-[#f59e0b]" /> Held
+        </span>
+        <span className="flex items-center gap-1.5">
           <span className="h-2.5 w-2.5 rounded-sm bg-[#ef4444]" /> Occupied
         </span>
       </div>
 
       <div className="pointer-events-none absolute bottom-4 left-4 z-10 max-w-[min(75%,24rem)] rounded-md border border-white/10 bg-black/60 px-3 py-2 text-sm text-white backdrop-blur-md">
         {hoveredSeatData
-          ? `${hoveredSeatData.seatNumber} · ${hoveredSeatData.available ? "Available" : "Occupied"}`
+          ? hoveredSeatHeldByOther
+            ? `${hoveredSeatData.seatNumber} · Held by ${hoveredHold.heldByName || "someone else"} (${hoveredHold.remainingSeconds ?? 300}s)`
+            : hoveredHold?.isSelf
+              ? `${hoveredSeatData.seatNumber} · Held by you`
+              : `${hoveredSeatData.seatNumber} · ${hoveredSeatData.available ? "Available" : "Occupied"}`
           : selectedSeat
             ? `Selected ${seats.find((seat) => seat.id === selectedSeat)?.seatNumber ?? "seat"}`
             : "Select a desk to focus"}
@@ -161,18 +222,41 @@ export default function FloorPlanViewer3D({
             3D rendering is unavailable. Choose a seat from the list.
           </p>
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-            {seats.map((seat) => (
-              <button
-                key={seat.id}
-                type="button"
-                disabled={!seat.available}
-                aria-pressed={selectedSeat === seat.id}
-                onClick={() => onSelectSeat(seat.available ? seat.id : null)}
-                className="rounded-md border border-white/15 px-3 py-2 text-left disabled:opacity-45"
-              >
-                {seat.seatNumber} · {seat.available ? "Available" : "Occupied"}
-              </button>
-            ))}
+            {seats.map((seat) => {
+              const hold = activeHolds[seat.id];
+              const isHeldByOther =
+                !!hold &&
+                !hold.isSelf &&
+                (hold.remainingSeconds === undefined ||
+                  hold.remainingSeconds > 0);
+
+              return (
+                <button
+                  key={seat.id}
+                  type="button"
+                  disabled={!seat.available && !isHeldByOther}
+                  aria-pressed={selectedSeat === seat.id}
+                  onClick={() => {
+                    if (isHeldByOther) {
+                      onHeldSeatClick?.(seat, {
+                        heldByName: hold.heldByName,
+                        remainingSeconds: hold.remainingSeconds,
+                      });
+                    } else if (seat.available) {
+                      onSelectSeat(seat.id);
+                    }
+                  }}
+                  className="rounded-md border border-white/15 px-3 py-2 text-left disabled:opacity-45"
+                >
+                  {seat.seatNumber} ·{" "}
+                  {isHeldByOther
+                    ? `Held by ${hold.heldByName || "someone else"}`
+                    : seat.available
+                      ? "Available"
+                      : "Occupied"}
+                </button>
+              );
+            })}
           </div>
         </div>
       )}
