@@ -108,13 +108,15 @@ export async function POST(req: Request) {
       );
     }
 
-    const { newCounter } = verification.authenticationInfo;
+    const { newCounter, credentialDeviceType, credentialBackedUp } = verification.authenticationInfo;
 
-    // Update signature counter and lastUsedAt timestamp
+    // Update signature counter, backup state, and lastUsedAt timestamp
     await prisma.passkeyCredential.update({
       where: { id: passkey.id },
       data: {
         counter: BigInt(newCounter),
+        backedUp: credentialBackedUp ?? passkey.backedUp,
+        deviceType: credentialDeviceType ?? passkey.deviceType,
         lastUsedAt: new Date(),
       },
     });

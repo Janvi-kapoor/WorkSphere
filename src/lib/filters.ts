@@ -157,7 +157,6 @@ export function buildVenueSearchSchema() {
     category: z.enum(["cafe", "coworking", "library", "all"]).optional(),
     cities: z.string().optional(),
     query: z.string().optional(),
-    q: z.string().optional(),
   };
 
   for (const [key, config] of Object.entries(VENUE_FILTERS)) {

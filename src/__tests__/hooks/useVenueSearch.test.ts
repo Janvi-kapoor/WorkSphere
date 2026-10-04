@@ -3,6 +3,7 @@ import { useVenueSearch } from "@/hooks/useVenueSearch";
 
 describe("useVenueSearch (#3513)", () => {
   const originalFetch = global.fetch;
+
   let mockFetch: jest.Mock;
 
   beforeEach(() => {
@@ -16,6 +17,17 @@ describe("useVenueSearch (#3513)", () => {
     jest.useRealTimers();
     global.fetch = originalFetch;
     jest.clearAllMocks();
+  });
+
+  it("initializes with default idle state", () => {
+    const { result } = renderHook(() => useVenueSearch());
+
+    expect(result.current.query).toBe("");
+    expect(result.current.venues).toEqual([]);
+    expect(result.current.results).toEqual([]);
+    expect(result.current.isLoading).toBe(false);
+    expect(result.current.loading).toBe(false);
+    expect(result.current.error).toBeNull();
   });
 
   it("debounces rapid keystrokes by 300ms and fires at most one request", async () => {
@@ -55,6 +67,61 @@ describe("useVenueSearch (#3513)", () => {
     });
     act(() => {
       jest.advanceTimersByTime(80);
+    });
+    act(() => {
+      result.current.setQuery("central");
+    });
+
+    // Advance 299ms: Still no request should have been dispatched
+    act(() => {
+      jest.advanceTimersByTime(299);
+    });
+    expect(mockFetch).not.toHaveBeenCalled();
+
+    // Advance final 1ms (reaching 300ms debounce threshold): Only 'central' should be queried
+    await act(async () => {
+      jest.advanceTimersByTime(1);
+    });
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(mockFetch).toHaveBeenCalledWith(
+      "/api/venues?query=central",
+      expect.objectContaining({
+        signal: expect.any(AbortSignal),
+      }),
+    );
+    expect(result.current.venues).toEqual(mockVenues);
+  });
+
+  it("cancels pending debounce timers on rapid keystrokes", async () => {
+    const mockVenues = [
+      { id: "v2", name: "Central Library", category: "library", latitude: 15, longitude: 25 },
+    ];
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ venues: mockVenues }),
+    });
+
+    const { result } = renderHook(() => useVenueSearch());
+
+    // Rapid typing simulation
+    act(() => {
+      result.current.setQuery("c");
+    });
+    act(() => {
+      jest.advanceTimersByTime(100);
+    });
+    act(() => {
+      result.current.setQuery("ce");
+    });
+    act(() => {
+      jest.advanceTimersByTime(100);
+    });
+    act(() => {
+      result.current.setQuery("cen");
+    });
+    act(() => {
+      jest.advanceTimersByTime(100);
     });
     act(() => {
       result.current.setQuery("central");
