@@ -4,7 +4,8 @@ import { useState, useEffect, useCallback } from "react";
 import { useWebXR } from "@/hooks/useWebXR";
 import ARNavigation from "./ARNavigation";
 import CompassFallback from "./CompassFallback";
-import { View } from "lucide-react";
+import { IndoorPositioningMap } from "@/components/spatial/IndoorPositioningMap";
+import { View, Map, Compass } from "lucide-react";
 import usePartySocket from "@/hooks/usePartySocketReconnect";
 import { todayInTimeZone } from "@/lib/bookingTime";
 
@@ -26,16 +27,25 @@ interface AnchorData {
   seat: { id: string; seatNumber: string; type: string } | null;
 }
 
+interface VenueLocation {
+  name?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
+}
+
 interface NavigationContainerProps {
   venueId: string;
+  venue?: VenueLocation | null;
 }
 
 export default function NavigationContainer({
   venueId,
+  venue,
 }: NavigationContainerProps) {
   const { isSupported, requestSession } = useWebXR();
   const [session, setSession] = useState<XRSession | null>(null);
   const [useFallback, setUseFallback] = useState(false);
+  const [fallbackMode, setFallbackMode] = useState<"ekf" | "compass">("ekf");
   const [seats, setSeats] = useState<SeatData[]>([]);
   const [anchors, setAnchors] = useState<AnchorData[]>([]);
   const [loading, setLoading] = useState(true);
@@ -187,7 +197,62 @@ export default function NavigationContainer({
   }
 
   if (useFallback || isSupported === false) {
-    return <CompassFallback />;
+    return (
+      <div className="flex flex-col w-full h-full space-y-4">
+        <div className="flex items-center justify-between bg-slate-900/90 border border-slate-800 p-2.5 rounded-xl">
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setFallbackMode("ekf")}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                fallbackMode === "ekf"
+                  ? "bg-blue-600 text-white shadow-sm"
+                  : "text-slate-400 hover:text-white"
+              }`}
+            >
+              <Map className="w-3.5 h-3.5" />
+              <span>2D EKF Indoor Fusion</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setFallbackMode("compass")}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                fallbackMode === "compass"
+                  ? "bg-blue-600 text-white shadow-sm"
+                  : "text-slate-400 hover:text-white"
+              }`}
+            >
+              <Compass className="w-3.5 h-3.5" />
+              <span>Compass Heading</span>
+            </button>
+          </div>
+
+          {isSupported && (
+            <button
+              type="button"
+              onClick={() => setUseFallback(false)}
+              className="text-xs text-blue-400 hover:text-blue-300 font-bold px-3 py-1.5"
+            >
+              Switch to AR
+            </button>
+          )}
+        </div>
+
+        {fallbackMode === "ekf" ? (
+          <IndoorPositioningMap
+            venueName={venue?.name || "Venue Navigation"}
+            className="flex-1"
+          />
+        ) : (
+          <CompassFallback
+            destinationLat={venue?.latitude}
+            destinationLng={venue?.longitude}
+            destinationName={venue?.name}
+            onRetryAR={isSupported ? () => setUseFallback(false) : undefined}
+          />
+        )}
+      </div>
+    );
   }
 
   return (

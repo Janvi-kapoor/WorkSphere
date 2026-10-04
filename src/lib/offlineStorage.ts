@@ -173,7 +173,7 @@ export async function initOfflineDB(): Promise<IDBDatabase> {
           });
         }
 
-        // Recently viewed venues store (Issue #3512)
+// Recently viewed venues store (Issue #3512)
         if (!database.objectStoreNames.contains("recentlyViewedVenues")) {
           const recentStore = database.createObjectStore(
             "recentlyViewedVenues",
@@ -182,6 +182,16 @@ export async function initOfflineDB(): Promise<IDBDatabase> {
             },
           );
           recentStore.createIndex("viewedAt", "viewedAt", { unique: false });
+        }
+
+        // Dedicated offline reviews store (Issue #3366)
+        if (!database.objectStoreNames.contains("pendingReviews")) {
+          const reviewStore = database.createObjectStore("pendingReviews", {
+            keyPath: "id",
+          });
+          reviewStore.createIndex("venueId", "venueId", { unique: false });
+          reviewStore.createIndex("status", "status", { unique: false });
+          reviewStore.createIndex("createdAt", "createdAt", { unique: false });
         }
 
         console.log("[OfflineDB] Database schema created");
@@ -1320,3 +1330,41 @@ export async function clearRecentlyViewedVenuesOffline(): Promise<void> {
   });
 }
 
+/**
+ * Returns total count of pending mutations queued across IndexedDB stores for offline sync.
+ */
+export async function getTotalPendingMutationsCount(): Promise<number> {
+  if (typeof indexedDB === "undefined") return 0;
+  try {
+    const database = await initOfflineDB();
+    const candidateStores = [
+      "pendingActions",
+      "pendingFavorites",
+      "pendingReviews",
+      "receiptExports",
+    ];
+    const availableStores = candidateStores.filter((name) =>
+      database.objectStoreNames.contains(name),
+    );
+    if (availableStores.length === 0) return 0;
+
+    let total = 0;
+    const tx = database.transaction(availableStores, "readonly");
+    await Promise.all(
+      availableStores.map(
+        (storeName) =>
+          new Promise<void>((resolve) => {
+            const req = tx.objectStore(storeName).count();
+            req.onsuccess = () => {
+              total += req.result || 0;
+              resolve();
+            };
+            req.onerror = () => resolve();
+          }),
+      ),
+    );
+    return total;
+  } catch {
+    return 0;
+  }
+}
