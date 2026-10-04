@@ -19,6 +19,15 @@ import {
   getCollectionNotesText,
   seedCollectionNotes,
 } from "@/lib/crdt/collectionNotes";
+import {
+  type NoteSyncStatus,
+  enqueuePendingNoteEdit,
+  loadCachedNote,
+  cacheNoteLocally,
+  getPendingEditsForFolder,
+  clearPendingEditsForFolder,
+  resolveLwwEdits,
+} from "@/lib/offlineNotesSync";
 
 const SNAPSHOT_DEBOUNCE_MS = 1500;
 const TYPING_TIMEOUT_MS = 2500;
@@ -46,7 +55,7 @@ export interface CollaborativeNotesProps {
   };
 }
 
-type SyncStatus = "connecting" | "synced" | "offline";
+type SyncStatus = NoteSyncStatus | "connecting" | "offline";
 
 export function CollaborativeNotes({
   folderId,
@@ -67,9 +76,7 @@ export function CollaborativeNotes({
   const clerkUser = useUser?.() || { user: null };
 
   const currentUserId =
-    propCurrentUser?.userId ||
-    clerkUser.user?.id ||
-    "local-user";
+    propCurrentUser?.userId || clerkUser.user?.id || "local-user";
   const currentUserName =
     propCurrentUser?.userName ||
     clerkUser.user?.fullName ||
@@ -81,15 +88,18 @@ export function CollaborativeNotes({
 
   const [text, setText] = useState(initialText ?? "");
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("connecting");
-  const [collaborators, setCollaborators] = useState<Map<string, CollaboratorPresence>>(
-    new Map(),
-  );
+  const [collaborators, setCollaborators] = useState<
+    Map<string, CollaboratorPresence>
+  >(new Map());
 
   const isLocalTypingRef = useRef(false);
   const typingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const ytextRef = useRef<Y.Text | null>(null);
-  const selectionRef = useRef<{ start: Y.RelativePosition; end: Y.RelativePosition } | null>(null);
+  const selectionRef = useRef<{
+    start: Y.RelativePosition;
+    end: Y.RelativePosition;
+  } | null>(null);
   const initialTextRef = useRef(initialText);
   const snapshotTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const getTokenRef = useRef(getToken);
@@ -223,33 +233,107 @@ export function CollaborativeNotes({
       params: async () => ({ token: (await getTokenRef.current?.()) ?? "" }),
     });
 
+    const isOnline = () =>
+      typeof navigator !== "undefined" ? navigator.onLine : true;
+
+    // Load cached note on mount for instant offline availability
+    void loadCachedNote(resolvedFolderId).then((cached) => {
+      if (cached && ytext.length === 0) {
+        setText(cached.text);
+      }
+    });
+
+    const flushOfflineQueue = async () => {
+      try {
+        const pending = await getPendingEditsForFolder(resolvedFolderId);
+        if (pending.length > 0) {
+          setSyncStatus("saving");
+          // Resolve pending edits using LWW (Last-Write-Wins) timestamping
+          const best = resolveLwwEdits(pending);
+          if (best && canEdit) {
+            applyYTextDiff(ytext, best.text);
+            setText(best.text);
+            await fetch(`/api/folders/${resolvedFolderId}`, {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                description: best.text.slice(0, MAX_COLLECTION_NOTES_LENGTH),
+              }),
+            }).catch(() => {});
+          }
+          await clearPendingEditsForFolder(resolvedFolderId);
+          setSyncStatus("synced");
+        }
+      } catch {
+        // failed flush
+      }
+    };
+
     const saveSnapshot = () => {
       if (snapshotTimerRef.current) clearTimeout(snapshotTimerRef.current);
       snapshotTimerRef.current = setTimeout(() => {
-        void fetch(`/api/folders/${resolvedFolderId}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            description: ytext.toString().slice(0, MAX_COLLECTION_NOTES_LENGTH),
-          }),
-        }).catch(() => {});
+        const currentContent = ytext
+          .toString()
+          .slice(0, MAX_COLLECTION_NOTES_LENGTH);
+        const wsOpen = Boolean(
+          provider.ws && (provider.ws.readyState as number) === 1,
+        );
+
+        if (!isOnline() || !wsOpen) {
+          // Offline: queue in IndexedDB
+          setSyncStatus("offline_pending");
+          void enqueuePendingNoteEdit(resolvedFolderId, currentContent);
+        } else {
+          setSyncStatus("saving");
+          void fetch(`/api/folders/${resolvedFolderId}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              description: currentContent,
+            }),
+          })
+            .then(() => {
+              void cacheNoteLocally(resolvedFolderId, currentContent);
+              setSyncStatus("synced");
+            })
+            .catch(() => {
+              setSyncStatus("offline_pending");
+              void enqueuePendingNoteEdit(resolvedFolderId, currentContent);
+            });
+        }
       }, SNAPSHOT_DEBOUNCE_MS);
     };
 
     const onTextChange = (event: Y.YTextEvent) => {
       const next = ytext.toString();
       setText(next);
+      void cacheNoteLocally(resolvedFolderId, next);
 
       const el = textareaRef.current;
       const sel = selectionRef.current;
-      if (!event.transaction.local && el && sel && document.activeElement === el) {
+      if (
+        !event.transaction.local &&
+        el &&
+        sel &&
+        document.activeElement === el
+      ) {
         requestAnimationFrame(() => {
-          const start = Y.createAbsolutePositionFromRelativePosition(sel.start, doc);
-          const end = Y.createAbsolutePositionFromRelativePosition(sel.end, doc);
+          const start = Y.createAbsolutePositionFromRelativePosition(
+            sel.start,
+            doc,
+          );
+          const end = Y.createAbsolutePositionFromRelativePosition(
+            sel.end,
+            doc,
+          );
           if (start && end) el.setSelectionRange(start.index, end.index);
         });
       }
-      if (canEdit && event.transaction.local && event.transaction.origin !== "seed") {
+      if (
+        canEdit &&
+        event.transaction.local &&
+        event.transaction.origin !== "seed"
+      ) {
         saveSnapshot();
       }
     };
@@ -257,19 +341,42 @@ export function CollaborativeNotes({
 
     const onSync = (synced: boolean) => {
       if (!synced) return;
-      setSyncStatus("synced");
       if (canEdit) seedCollectionNotes(doc, initialTextRef.current);
       setText(ytext.toString());
+      void flushOfflineQueue().then(() => {
+        setSyncStatus("synced");
+      });
     };
     const onStatus = ({ status: s }: { status: string }) => {
-      if (s === "disconnected") setSyncStatus("offline");
-      else if (s === "connected") setSyncStatus("synced");
+      if (s === "disconnected") {
+        setSyncStatus("offline_pending");
+      } else if (s === "connected") {
+        void flushOfflineQueue().then(() => {
+          setSyncStatus("synced");
+        });
+      }
     };
 
     provider.on("sync", onSync);
     provider.on("status", onStatus);
 
+    const handleWindowOnline = () => {
+      void flushOfflineQueue();
+    };
+    const handleWindowOffline = () => {
+      setSyncStatus("offline_pending");
+    };
+
+    if (typeof window !== "undefined") {
+      window.addEventListener("online", handleWindowOnline);
+      window.addEventListener("offline", handleWindowOffline);
+    }
+
     return () => {
+      if (typeof window !== "undefined") {
+        window.removeEventListener("online", handleWindowOnline);
+        window.removeEventListener("offline", handleWindowOffline);
+      }
       if (snapshotTimerRef.current) clearTimeout(snapshotTimerRef.current);
       if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
       ytext.unobserve(onTextChange);
@@ -390,6 +497,7 @@ export function CollaborativeNotes({
                 {/* User Avatar with Green Indicator Dot */}
                 <div className="relative flex items-center justify-center shrink-0">
                   {collab.avatarUrl ? (
+                    /* eslint-disable-next-line @next/next/no-img-element */
                     <img
                       src={collab.avatarUrl}
                       alt={collab.userName}
@@ -435,25 +543,43 @@ export function CollaborativeNotes({
 
           {/* Sync status indicator */}
           <span
+            data-testid="notes-sync-status"
             className="inline-flex items-center gap-1 text-xs text-zinc-500 ml-1"
             aria-live="polite"
           >
-            {syncStatus === "connecting" && (
+            {(syncStatus === "connecting" || syncStatus === "saving") && (
               <>
-                <Loader2 className="w-3 h-3 animate-spin" aria-hidden="true" />
-                <span className="hidden sm:inline">Connecting…</span>
+                <Loader2
+                  className="w-3 h-3 animate-spin text-blue-500"
+                  aria-hidden="true"
+                />
+                <span className="hidden sm:inline">
+                  {syncStatus === "saving" ? "Saving…" : "Connecting…"}
+                </span>
               </>
             )}
             {syncStatus === "synced" && (
               <>
-                <Cloud className="w-3 h-3 text-emerald-500" aria-hidden="true" />
-                <span className="hidden sm:inline">Live — edits merge automatically</span>
+                <Cloud
+                  className="w-3 h-3 text-emerald-500"
+                  aria-hidden="true"
+                />
+                <span className="hidden sm:inline">
+                  Live — edits merge automatically
+                </span>
               </>
             )}
-            {syncStatus === "offline" && (
+            {(syncStatus === "offline" || syncStatus === "offline_pending") && (
               <>
-                <CloudOff className="w-3 h-3 text-amber-500" aria-hidden="true" />
-                <span className="hidden sm:inline">Offline — changes will merge on reconnect</span>
+                <CloudOff
+                  className="w-3 h-3 text-amber-500"
+                  aria-hidden="true"
+                />
+                <span className="hidden sm:inline">
+                  {syncStatus === "offline_pending"
+                    ? "Offline — pending sync"
+                    : "Offline — changes will merge on reconnect"}
+                </span>
               </>
             )}
           </span>

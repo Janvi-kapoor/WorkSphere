@@ -46,14 +46,57 @@ export const getCalendarUrls = (
   return { googleUrl, outlookUrl, start, end };
 };
 
+export interface ICSOptions {
+  durationMinutes?: number;
+  confirmationId?: string;
+  timezone?: string;
+  description?: string;
+  summary?: string;
+}
+
+/**
+ * Folds lines longer than 75 characters per RFC 5545 section 3.1.
+ */
+function foldIcsLine(line: string): string {
+  if (line.length <= 75) return line;
+  const parts: string[] = [];
+  parts.push(line.slice(0, 75));
+  let remaining = line.slice(75);
+  while (remaining.length > 0) {
+    parts.push(" " + remaining.slice(0, 74));
+    remaining = remaining.slice(74);
+  }
+  return parts.join("\r\n");
+}
+
 export const generateICSContent = (
   venueName: string,
   venueAddress: string,
   dateStr: string,
   timeStr: string,
-  durationMinutes = 60,
-  confirmationId = "",
+  durationOrOptions: number | ICSOptions = 60,
+  legacyConfirmationId = "",
 ) => {
+  const options: ICSOptions =
+    typeof durationOrOptions === "number"
+      ? {
+          durationMinutes: durationOrOptions,
+          confirmationId: legacyConfirmationId,
+        }
+      : durationOrOptions;
+
+  const durationMinutes = options.durationMinutes ?? 60;
+  const confirmationId = options.confirmationId ?? "";
+  const timezone =
+    options.timezone ||
+    (() => {
+      try {
+        return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+      } catch {
+        return "UTC";
+      }
+    })();
+
   const { start, end } = formatDateTimeForCalendar(
     dateStr,
     timeStr,
@@ -62,23 +105,26 @@ export const generateICSContent = (
   if (!start) return "";
 
   const durationLabel = `${durationMinutes} min`;
-  const summary = confirmationId
+  const defaultSummary = confirmationId
     ? `Booking at ${venueName} (${durationLabel}) [${confirmationId}] - ${venueAddress}`
     : `Booking at ${venueName} (${durationLabel}) - ${venueAddress}`;
+  const summary = options.summary || defaultSummary;
 
-  const description = escapeIcsText(
-    [
-      `Hot desk booking at ${venueName}`,
-      `Duration: ${durationLabel}`,
-      confirmationId ? `Confirmation: ${confirmationId}` : "",
-    ]
-      .filter(Boolean)
-      .join("\n"),
-  );
+  const defaultDescription = [
+    `Hot desk booking at ${venueName}`,
+    `Duration: ${durationLabel}`,
+    confirmationId ? `Confirmation: ${confirmationId}` : "",
+    timezone ? `Timezone: ${timezone}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+  const description = escapeIcsText(options.description || defaultDescription);
 
   const uid = confirmationId
     ? `${confirmationId.replace(/[^A-Za-z0-9#-]/g, "")}@worksphere.app`
     : `booking-${start}@worksphere.app`;
+
+  const stamp = new Date().toISOString().replace(/-|:|\.\d\d\d/g, "");
 
   const lines = [
     "BEGIN:VCALENDAR",
@@ -86,19 +132,21 @@ export const generateICSContent = (
     "PRODID:-//WorkSphere//EN",
     "CALSCALE:GREGORIAN",
     "METHOD:PUBLISH",
+    ...(timezone ? [`X-WR-TIMEZONE:${escapeIcsText(timezone)}`] : []),
     "BEGIN:VEVENT",
     `UID:${uid}`,
-    `DTSTAMP:${start}`,
+    `DTSTAMP:${stamp}`,
     `DTSTART:${start}`,
     `DTEND:${end}`,
     `SUMMARY:${escapeIcsText(summary)}`,
     `DESCRIPTION:${description}`,
     `LOCATION:${escapeIcsText(venueAddress)}`,
+    "STATUS:CONFIRMED",
     "END:VEVENT",
     "END:VCALENDAR",
   ];
 
-  return lines.join("\r\n") + "\r\n";
+  return lines.map(foldIcsLine).join("\r\n") + "\r\n";
 };
 
 export const downloadICS = (
@@ -106,16 +154,16 @@ export const downloadICS = (
   venueAddress: string,
   dateStr: string,
   timeStr: string,
-  durationMinutes = 60,
-  confirmationId = "",
+  durationOrOptions: number | ICSOptions = 60,
+  legacyConfirmationId = "",
 ) => {
   const icsContent = generateICSContent(
     venueName,
     venueAddress,
     dateStr,
     timeStr,
-    durationMinutes,
-    confirmationId,
+    durationOrOptions,
+    legacyConfirmationId,
   );
   if (!icsContent) return;
 
@@ -149,6 +197,7 @@ interface BulkBooking {
  */
 export function generateBulkICSContent(bookings: BulkBooking[]): string | null {
   const events: string[] = [];
+  const stamp = new Date().toISOString().replace(/-|:|\.\d\d\d/g, "");
 
   for (const b of bookings) {
     const { start, end } = formatDateTimeForCalendar(
@@ -170,7 +219,7 @@ export function generateBulkICSContent(bookings: BulkBooking[]): string | null {
       [
         "BEGIN:VEVENT",
         `UID:${uid}`,
-        `DTSTAMP:${start}`,
+        `DTSTAMP:${stamp}`,
         `DTSTART:${start}`,
         `DTEND:${end}`,
         `SUMMARY:${escapeIcsText(summary)}`,

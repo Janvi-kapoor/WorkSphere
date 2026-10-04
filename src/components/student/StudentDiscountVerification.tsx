@@ -87,14 +87,28 @@ export function StudentDiscountVerification({
   const [error, setError] = useState<string | null>(null);
 
   const workerRef = useRef<Worker | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
   const onVerifiedRef = useRef(onVerified);
   useEffect(() => {
     onVerifiedRef.current = onVerified;
   });
 
   const terminateWorker = useCallback(() => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
     if (workerRef.current) {
-      workerRef.current.terminate();
+      try {
+        workerRef.current.postMessage({ type: "abort" });
+      } catch {
+        // Ignore if worker is already closed
+      }
+      try {
+        workerRef.current.terminate();
+      } catch {
+        // Ignore if worker is already terminated
+      }
       workerRef.current = null;
     }
   }, []);
@@ -247,6 +261,9 @@ export function StudentDiscountVerification({
       if (!workerRef.current) {
         spawnWorker();
       }
+
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
 
       // zkpWorker ignores messages without type "prove": without it the
       // request was silently dropped and verification never finished.

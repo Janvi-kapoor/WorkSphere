@@ -11,6 +11,7 @@ import {
   MapPin,
 } from "lucide-react";
 import { getCalendarUrls, downloadICS } from "@/lib/calendar";
+import { BookingHistoryList } from "@/app/dashboard/BookingHistoryList";
 
 export interface BookingSummary {
   id: string;
@@ -248,6 +249,7 @@ export function BookingList({
                 Google Calendar
               </a>
               <button
+                type="button"
                 onClick={() =>
                   downloadICS(
                     venueName,
@@ -259,9 +261,10 @@ export function BookingList({
                   )
                 }
                 className={chipClass}
+                aria-label={`Download iCalendar file for booking ${booking.confirmationId}`}
               >
                 <Calendar className="w-3.5 h-3.5" />
-                .ics
+                Add to Calendar (.ics)
               </button>
               <button
                 onClick={() => cancelBooking(booking)}
@@ -330,21 +333,33 @@ export function BookingList({
           {message.text}
         </p>
       )}
-      {upcoming.length > 0 && (
-        <section>
-          <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500 mb-2">
-            Upcoming
-          </h3>
-          <ul className="space-y-3">{upcoming.map(renderBooking)}</ul>
-        </section>
-      )}
-      {rest.length > 0 && (
-        <section>
-          <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500 mb-2">
-            Past &amp; cancelled
-          </h3>
-          <ul className="space-y-3">{rest.map(renderBooking)}</ul>
-        </section>
+      {bookings.length > 10 ? (
+        <BookingHistoryList
+          bookings={bookings}
+          onCancelBooking={cancelBooking}
+          selectedIds={selectedIds}
+          onToggleSelected={toggleSelected}
+          cancellingId={cancellingId}
+        />
+      ) : (
+        <>
+          {upcoming.length > 0 && (
+            <section>
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500 mb-2">
+                Upcoming
+              </h3>
+              <ul className="space-y-3">{upcoming.map(renderBooking)}</ul>
+            </section>
+          )}
+          {rest.length > 0 && (
+            <section>
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500 mb-2">
+                Past &amp; cancelled
+              </h3>
+              <ul className="space-y-3">{rest.map(renderBooking)}</ul>
+            </section>
+          )}
+        </>
       )}
 
       {selectedIds.size > 0 && (

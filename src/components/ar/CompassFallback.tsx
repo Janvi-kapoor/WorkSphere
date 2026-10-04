@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useDeviceOrientation } from "@/hooks/useDeviceOrientation";
+import { useFocusTrap } from "@/hooks/useFocusTrap";
 import {
   calculateBearing,
   calculateRelativeBearing,
@@ -17,13 +18,19 @@ import {
   AlertCircle,
   RotateCw,
   LocateFixed,
+  X,
 } from "lucide-react";
+import { CompassKalmanFilter } from "@/lib/spatial/compassFilter";
 
 interface CompassFallbackProps {
   destinationLat?: number | null;
   destinationLng?: number | null;
   destinationName?: string | null;
   onRetryAR?: () => void;
+  onClose?: () => void;
+  trapFocus?: boolean;
+  kalmanQ?: number;
+  kalmanR?: number;
 }
 
 interface UserCoordinates {
@@ -37,11 +44,55 @@ export default function CompassFallback({
   destinationLng,
   destinationName,
   onRetryAR,
+  onClose,
+  trapFocus = true,
+  kalmanQ = 0.05,
+  kalmanR = 0.5,
 }: CompassFallbackProps) {
-  const { heading, error: orientationError, isSupported, permissionState, requestPermission } =
-    useDeviceOrientation();
+  const containerRef = useRef<HTMLDivElement>(null);
 
-  const [userLocation, setUserLocation] = useState<UserCoordinates | null>(null);
+  useFocusTrap(containerRef, {
+    isActive: trapFocus,
+    onEscape: onClose,
+  });
+  const {
+    heading,
+    error: orientationError,
+    isSupported,
+    permissionState,
+    requestPermission,
+  } = useDeviceOrientation();
+
+  const [filteredHeading, setFilteredHeading] = useState<number | null>(null);
+  const kalmanFilterRef = useRef<CompassKalmanFilter | null>(null);
+
+  if (!kalmanFilterRef.current) {
+    kalmanFilterRef.current = new CompassKalmanFilter({
+      q: kalmanQ,
+      r: kalmanR,
+    });
+  }
+
+  useEffect(() => {
+    kalmanFilterRef.current?.setParameters({ q: kalmanQ, r: kalmanR });
+  }, [kalmanQ, kalmanR]);
+
+  useEffect(() => {
+    if (heading !== null && !isNaN(heading)) {
+      const smoothed = kalmanFilterRef.current?.update(heading);
+      if (smoothed !== null && smoothed !== undefined) {
+        setFilteredHeading(Math.round(smoothed * 10) / 10);
+      }
+    } else {
+      setFilteredHeading(null);
+    }
+  }, [heading]);
+
+  const activeHeading = filteredHeading !== null ? filteredHeading : heading;
+
+  const [userLocation, setUserLocation] = useState<UserCoordinates | null>(
+    null,
+  );
   const [geoError, setGeoError] = useState<string | null>(null);
   const [geoLoading, setGeoLoading] = useState<boolean>(true);
   const [mode, setMode] = useState<"venue" | "north">("venue");
@@ -83,7 +134,11 @@ export default function CompassFallback({
     );
 
     return () => {
-      if (typeof window !== "undefined" && "geolocation" in navigator && watchId !== undefined) {
+      if (
+        typeof window !== "undefined" &&
+        "geolocation" in navigator &&
+        watchId !== undefined
+      ) {
         navigator.geolocation?.clearWatch?.(watchId);
       }
     };
@@ -111,21 +166,31 @@ export default function CompassFallback({
       : null;
 
   const relativeBearing =
-    targetBearing !== null && heading !== null
-      ? calculateRelativeBearing(targetBearing, heading)
+    targetBearing !== null && activeHeading !== null
+      ? calculateRelativeBearing(targetBearing, activeHeading)
       : null;
 
   const isGuidingToVenue = mode === "venue" && relativeBearing !== null;
   const arrowRotation = isGuidingToVenue
     ? relativeBearing
-    : heading !== null
-      ? -heading
+    : activeHeading !== null
+      ? -activeHeading
       : 0;
 
   const turnGuidance = getRelativeDirectionDescription(relativeBearing);
 
   return (
-    <div className="flex flex-col items-center justify-between w-full h-full min-h-[460px] bg-slate-900 rounded-xl p-6 text-white relative overflow-hidden select-none border border-slate-800 shadow-2xl">
+    <div
+      ref={containerRef}
+      role="region"
+      aria-label={
+        hasDestination
+          ? `Compass navigation for ${destinationName || "Venue"}`
+          : "Compass navigation"
+      }
+      tabIndex={-1}
+      className="flex flex-col items-center justify-between w-full h-full min-h-[460px] bg-slate-900 rounded-xl p-6 text-white relative overflow-hidden select-none border border-slate-800 shadow-2xl focus:outline-none"
+    >
       {/* Top Banner */}
       <div className="w-full flex items-center justify-between z-10">
         <div className="flex items-center gap-2">
@@ -137,22 +202,38 @@ export default function CompassFallback({
           </span>
         </div>
 
-        {onRetryAR && (
-          <button
-            onClick={onRetryAR}
-            className="flex items-center gap-1.5 text-xs text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-lg border border-slate-700 transition-colors"
-          >
-            <RotateCw className="w-3.5 h-3.5" />
-            Retry AR
-          </button>
-        )}
+        <div className="flex items-center gap-2">
+          {onRetryAR && (
+            <button
+              type="button"
+              onClick={onRetryAR}
+              className="flex items-center gap-1.5 text-xs text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-lg border border-slate-700 transition-colors"
+            >
+              <RotateCw className="w-3.5 h-3.5" />
+              <span>Retry AR</span>
+            </button>
+          )}
+
+          {onClose && (
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Close compass navigation"
+              className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Main Content Area */}
       <div className="flex flex-col items-center gap-6 my-auto z-10 w-full max-w-sm">
         <div className="text-center">
           <h3 className="text-xl font-bold mb-1">
-            {hasDestination ? (destinationName || "Venue Navigation") : "Compass Heading"}
+            {hasDestination
+              ? destinationName || "Venue Navigation"
+              : "Compass Heading"}
           </h3>
           <p className="text-slate-400 text-xs max-w-xs mx-auto">
             {hasDestination
@@ -170,7 +251,8 @@ export default function CompassFallback({
                 Enable Compass Orientation
               </p>
               <p className="text-xs text-blue-300/80 mt-1">
-                iOS Safari requires permission to use device orientation sensors for directional guidance.
+                iOS Safari requires permission to use device orientation sensors
+                for directional guidance.
               </p>
             </div>
             <button
@@ -186,14 +268,19 @@ export default function CompassFallback({
         {!isSupported && (
           <div className="w-full bg-red-950/40 text-red-300 p-3 rounded-lg border border-red-500/30 flex items-center gap-2.5 text-xs">
             <AlertCircle className="w-4 h-4 shrink-0 text-red-400" />
-            <span>Device orientation sensors are not supported on this device.</span>
+            <span>
+              Device orientation sensors are not supported on this device.
+            </span>
           </div>
         )}
 
         {permissionState === "denied" && (
           <div className="w-full bg-amber-950/40 text-amber-200 p-3 rounded-lg border border-amber-500/30 flex items-center gap-2.5 text-xs">
             <AlertCircle className="w-4 h-4 shrink-0 text-amber-400" />
-            <span>Orientation permission denied. Enable Motion & Orientation Access in iOS Settings → Safari.</span>
+            <span>
+              Orientation permission denied. Enable Motion & Orientation Access
+              in iOS Settings → Safari.
+            </span>
           </div>
         )}
 
@@ -206,18 +293,26 @@ export default function CompassFallback({
 
         {/* Compass & 2D Directional Arrow Dial */}
         <div className="relative w-64 h-64 flex items-center justify-center">
-          {/* Compass Base Ring (Cardinal Points rotate with -heading) */}
+          {/* Compass Base Ring (Cardinal Points rotate with -activeHeading) */}
           <div
             className="absolute inset-0 rounded-full border-4 border-slate-700/80 bg-slate-800/90 shadow-[0_0_40px_rgba(0,0,0,0.6)] backdrop-blur-sm transition-transform duration-200 ease-out flex items-center justify-center"
             style={{
-              transform: `rotate(${heading !== null ? -heading : 0}deg)`,
+              transform: `rotate(${activeHeading !== null ? -activeHeading : 0}deg)`,
             }}
           >
             {/* Cardinal Markers */}
-            <span className="absolute top-2.5 font-extrabold text-sm text-red-500">N</span>
-            <span className="absolute bottom-2.5 font-bold text-sm text-slate-400">S</span>
-            <span className="absolute right-3 font-bold text-sm text-slate-400">E</span>
-            <span className="absolute left-3 font-bold text-sm text-slate-400">W</span>
+            <span className="absolute top-2.5 font-extrabold text-sm text-red-500">
+              N
+            </span>
+            <span className="absolute bottom-2.5 font-bold text-sm text-slate-400">
+              S
+            </span>
+            <span className="absolute right-3 font-bold text-sm text-slate-400">
+              E
+            </span>
+            <span className="absolute left-3 font-bold text-sm text-slate-400">
+              W
+            </span>
 
             {/* Minor Tick Marks */}
             <div className="absolute inset-2 rounded-full border border-dashed border-slate-600/40 pointer-events-none" />
@@ -260,7 +355,9 @@ export default function CompassFallback({
             <div className="flex items-center gap-2 text-sm font-semibold">
               <MapPin className="w-4 h-4 text-emerald-400 shrink-0" />
               <span className="text-emerald-300">
-                {geoLoading ? "Acquiring GPS location..." : turnGuidance || "Pointing to destination"}
+                {geoLoading
+                  ? "Acquiring GPS location..."
+                  : turnGuidance || "Pointing to destination"}
               </span>
               {distanceKm !== null && (
                 <span className="px-2 py-0.5 rounded-full text-xs font-mono bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
@@ -280,13 +377,21 @@ export default function CompassFallback({
           {/* Heading Readout */}
           <div className="flex items-center gap-3 font-mono text-xs text-slate-400">
             <span className="bg-slate-800/80 px-2.5 py-1 rounded-md border border-slate-700/60">
-              Heading: <strong className="text-white">{heading !== null ? `${Math.round(heading)}°` : "---°"}</strong>{" "}
-              {getCompassDirection(heading)}
+              Heading:{" "}
+              <strong className="text-white">
+                {activeHeading !== null
+                  ? `${Math.round(activeHeading)}°`
+                  : "---°"}
+              </strong>{" "}
+              {getCompassDirection(activeHeading)}
             </span>
 
             {targetBearing !== null && (
               <span className="bg-slate-800/80 px-2.5 py-1 rounded-md border border-slate-700/60">
-                Bearing: <strong className="text-white">{Math.round(targetBearing)}°</strong>
+                Bearing:{" "}
+                <strong className="text-white">
+                  {Math.round(targetBearing)}°
+                </strong>
               </span>
             )}
           </div>

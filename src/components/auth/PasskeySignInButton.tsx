@@ -8,6 +8,11 @@ import {
 } from "@simplewebauthn/browser";
 import { Fingerprint, Loader2, AlertCircle } from "lucide-react";
 import { useCsrfToken } from "@/hooks/useCsrfToken";
+import {
+  savePasskeyChallengeToSession,
+  clearPasskeyChallengeFromSession,
+  setupPasskeyUnloadCleanup,
+} from "@/lib/passkey";
 
 export interface PasskeySignInButtonProps {
   /**
@@ -83,6 +88,10 @@ export function PasskeySignInButton({
 
   useEffect(() => {
     setIsSupported(browserSupportsWebAuthn());
+    const cleanupUnload = setupPasskeyUnloadCleanup();
+    return () => {
+      cleanupUnload();
+    };
   }, []);
 
   // Conditional UI: automatically start WebAuthn autofill flow when mounted and supported
@@ -122,6 +131,8 @@ export function PasskeySignInButton({
         const optionsJSON = await fetchAuthOptions();
         if (!isMounted || isAuthenticatingRef.current) return;
 
+        // startAuthentication delegates to navigator.credentials.get with mediation: "conditional"
+        // for Safari iOS 16+ and Android Chrome autofill integration
         const authenticationResponse = await startAuthentication({
           optionsJSON,
           useBrowserAutofill: true,
@@ -132,8 +143,15 @@ export function PasskeySignInButton({
 
         await verifyAuthResponse(authenticationResponse);
       } catch (err: unknown) {
-        // Conditional UI errors (cancellation, abort, or no passkeys) must be silently
-        // ignored so the user's normal login form is unaffected.
+        // Conditional UI errors (cancellation, AbortSignal abort, or no passkeys) must be silently
+        // ignored so manual email/password login is completely uninterrupted.
+        if (
+          err instanceof Error &&
+          (err.name === "AbortError" || err.name === "NotAllowedError")
+        ) {
+          console.debug("Passkey conditional autofill dismissed or aborted:", err.name);
+          return;
+        }
         console.debug("Passkey conditional UI dismissed or skipped:", err);
       }
     }
@@ -159,7 +177,11 @@ export function PasskeySignInButton({
       WebAuthnAbortService.cancelCeremony();
 
       // 1. Fetch auth options from server
+      clearPasskeyChallengeFromSession(); // Clear any prior stale challenge before ceremony starts
       const optionsJSON = await fetchAuthOptions();
+      if (optionsJSON?.challenge) {
+        savePasskeyChallengeToSession(optionsJSON.challenge, "authentication");
+      }
 
       // 2. Prompt browser WebAuthn assertion (modal/explicit)
       const authenticationResponse = await startAuthentication({
@@ -169,7 +191,9 @@ export function PasskeySignInButton({
 
       // 3. Verify assertion on server
       await verifyAuthResponse(authenticationResponse);
+      clearPasskeyChallengeFromSession(); // Clear challenge upon successful verification
     } catch (err: unknown) {
+      clearPasskeyChallengeFromSession(); // Invalidate challenge if ceremony fails or is aborted
       console.error("Passkey sign-in error:", err);
       isAuthenticatingRef.current = false;
       const name = err instanceof Error ? err.name : "";

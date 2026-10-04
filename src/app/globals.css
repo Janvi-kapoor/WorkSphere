@@ -24,7 +24,7 @@
   --foreground: #171717;
   --primary-accent: #3b82f6;
   --primary-accent-rgb: 59, 130, 246;
-  color-scheme: light dark;
+  color-scheme: light;
 }
 
 .cyberpunk {
@@ -43,6 +43,11 @@
 .dark {
   --background: #0a0a0a;
   --foreground: #ededed;
+}
+
+.dark,
+.cyberpunk {
+  color-scheme: dark;
 }
 
 /* ─── Base Styles ─────────────────────────────────────────────────── */
@@ -549,5 +554,34 @@ textarea:focus::placeholder {
   .ws-skeleton {
     animation: none;
   }
+}
+
+/* ─── High-Contrast Mode Styles ───────────────────────────────────── */
+html.high-contrast {
+  --contrast-border: #000000;
+}
+
+html.high-contrast.dark {
+  --contrast-border: #ffffff;
+}
+
+html.high-contrast button,
+html.high-contrast a,
+html.high-contrast input,
+html.high-contrast select,
+html.high-contrast textarea {
+  outline-width: 2px;
+}
+
+html.high-contrast .border-zinc-200,
+html.high-contrast .border-zinc-300 {
+  border-color: #71717a;
+}
+
+html.high-contrast .dark .border-zinc-800,
+html.high-contrast .dark .border-zinc-700,
+html.high-contrast.dark .border-zinc-800,
+html.high-contrast.dark .border-zinc-700 {
+  border-color: #a1a1aa;
 }
 

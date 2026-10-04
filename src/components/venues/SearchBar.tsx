@@ -3,6 +3,7 @@
 import React, { useState, useRef, useEffect } from "react";
 import { Search, X, Loader2, MapPin } from "lucide-react";
 import { useVenueSearch, VenueSearchResult } from "@/hooks/useVenueSearch";
+import { AmenityFilterPills } from "./AmenityFilterPills";
 
 export interface SearchBarProps {
   placeholder?: string;
@@ -11,19 +12,21 @@ export interface SearchBarProps {
   debounceMs?: number;
   initialQuery?: string;
   autoFocus?: boolean;
+  showAmenityPills?: boolean;
 }
 
 /**
- * Reusable SearchBar component with 300ms input debounce and AbortController (#3513)
+ * Reusable SearchBar component with 250ms input debounce and AbortController (#3513, #3773)
  * Cancels stale in-flight requests and avoids race conditions on fast typing.
  */
 export function SearchBar({
   placeholder = "Search venues by name, address, or tag...",
   onSelect,
   className = "",
-  debounceMs = 300,
+  debounceMs = 250,
   initialQuery = "",
   autoFocus = false,
+  showAmenityPills = false,
 }: SearchBarProps) {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -115,6 +118,13 @@ export function SearchBar({
           )}
         </div>
       </div>
+
+      {/* Optional mobile amenity filter pill row below search bar */}
+      {showAmenityPills && (
+        <div className="mt-2.5">
+          <AmenityFilterPills />
+        </div>
+      )}
 
       {isOpen && venues.length > 0 && (
         <ul

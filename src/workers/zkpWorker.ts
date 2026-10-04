@@ -26,11 +26,21 @@ interface CancelMessage {
   type: "cancel";
 }
 
+interface TerminateMessage {
+  type: "terminate";
+}
+
+interface AbortMessage {
+  type: "abort";
+}
+
 type WorkerMessage =
   | PremiumProofRequest
   | StudentProofRequest
   | VerifyRequest
-  | CancelMessage;
+  | CancelMessage
+  | TerminateMessage
+  | AbortMessage;
 
 let generation = 0;
 
@@ -77,6 +87,26 @@ function sanitizeError(error: unknown): string {
 }
 
 import { getOptimizedZkpOptions } from "@/lib/zkp/wasmSimd";
+
+/**
+ * Terminate the bn128 curve instance created by snarkjs on globalThis,
+ * releasing thread pools, worker instances, and WASM memory.
+ */
+export async function terminateCurveBn128(): Promise<void> {
+  const g = globalThis as typeof globalThis & {
+    curve_bn128?: { terminate: () => Promise<void> };
+  };
+
+  if (g.curve_bn128) {
+    try {
+      await g.curve_bn128.terminate();
+    } catch {
+      // Cleanup must never mask results or throw
+    } finally {
+      delete g.curve_bn128;
+    }
+  }
+}
 
 /**
  * Generate a proof using explicit witness/prover lifecycle control with WebAssembly SIMD acceleration.
@@ -129,24 +159,23 @@ async function generateProof(
      * instead of keeping it alive across consecutive requests.
      */
     wtns = null;
-
-    const g = globalThis as typeof globalThis & {
-      curve_bn128?: { terminate: () => Promise<void> };
-    };
-
-    if (g.curve_bn128) {
-      try {
-        await g.curve_bn128.terminate();
-      } catch {
-        // Cleanup must never mask the original proof result/error.
-      }
-    }
+    await terminateCurveBn128();
   }
 }
 
 self.addEventListener("message", async (e: MessageEvent<WorkerMessage>) => {
   if (e.data.type === "cancel") {
     generation++;
+    await terminateCurveBn128();
+    return;
+  }
+
+  if (e.data.type === "abort" || e.data.type === "terminate") {
+    generation++;
+    await terminateCurveBn128();
+    if (typeof self !== "undefined" && typeof self.close === "function") {
+      self.close();
+    }
     return;
   }
 
@@ -168,6 +197,8 @@ self.addEventListener("message", async (e: MessageEvent<WorkerMessage>) => {
         type: "error",
         error: sanitizeError(error),
       });
+    } finally {
+      await terminateCurveBn128();
     }
     return;
   }
@@ -209,16 +240,7 @@ self.addEventListener("message", async (e: MessageEvent<WorkerMessage>) => {
         isOom: errorType === "oom",
       });
     } finally {
-      const g = globalThis as typeof globalThis & {
-        curve_bn128?: { terminate: () => Promise<void> };
-      };
-      if (g.curve_bn128) {
-        try {
-          await g.curve_bn128.terminate();
-        } catch {
-          // ignore cleanup errors
-        }
-      }
+      await terminateCurveBn128();
     }
     return;
   }
@@ -277,6 +299,8 @@ self.addEventListener("message", async (e: MessageEvent<WorkerMessage>) => {
         error: sanitizeError(error),
         isOom: errorType === "oom",
       });
+    } finally {
+      await terminateCurveBn128();
     }
     return;
   }

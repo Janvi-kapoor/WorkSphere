@@ -360,6 +360,7 @@ export function BookingModal({
         role="dialog"
         aria-modal="true"
         aria-labelledby="booking-modal-title"
+        data-testid="booking-modal"
         className="bg-white dark:bg-zinc-900 w-full max-w-xl max-h-[92vh] flex flex-col overflow-hidden rounded-3xl shadow-2xl border border-zinc-200 dark:border-zinc-800 animate-in zoom-in-95 duration-200"
         onPointerDown={(event) => event.stopPropagation()}
         onClick={(event) => event.stopPropagation()}
@@ -683,6 +684,7 @@ export function BookingModal({
                     <CalendarPlus className="w-4 h-4" /> Add to Google Calendar
                   </a>
                   <button
+                    type="button"
                     onClick={() =>
                       downloadICS(
                         venue.name,
@@ -694,8 +696,9 @@ export function BookingModal({
                       )
                     }
                     className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm font-medium bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700"
+                    aria-label="Add to Calendar (.ics)"
                   >
-                    <Calendar className="w-4 h-4" /> Download .ics
+                    <Calendar className="w-4 h-4" /> Add to Calendar (.ics)
                   </button>
                   {confirmation.bookingId && (
                     <a
