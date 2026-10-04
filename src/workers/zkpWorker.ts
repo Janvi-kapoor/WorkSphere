@@ -76,17 +76,19 @@ function sanitizeError(error: unknown): string {
   return "Proof generation failed.";
 }
 
+import { getOptimizedZkpOptions } from "@/lib/zkp/wasmSimd";
+
 /**
- * Generate a proof using explicit witness/prover lifecycle control.
+ * Generate a proof using explicit witness/prover lifecycle control with WebAssembly SIMD acceleration.
  *
  * snarkjs.fullProve() creates the witness internally and uses the default
  * multithreaded prover. For repeated browser-worker executions this can
  * retain WASM/worker resources longer than desired.
  *
  * We therefore:
- * 1. create a memory-backed witness explicitly;
- * 2. request minimal initial WASM memory;
- * 3. use the single-threaded prover;
+ * 1. dynamically detect WebAssembly Fixed-width 128-bit SIMD vector support;
+ * 2. create a memory-backed witness with SIMD-aligned buffer pages;
+ * 3. pass SIMD acceleration flags to the Groth16 prover;
  * 4. release references after the proof completes;
  * 5. terminate the BN128 worker when snarkjs created one.
  */
@@ -96,23 +98,30 @@ async function generateProof(
 ): Promise<{
   proof: unknown;
   publicSignals: unknown;
+  simdAccelerated: boolean;
 }> {
   let wtns: { type: "mem" } | null = { type: "mem" };
+  const zkpOptions = await getOptimizedZkpOptions();
 
   try {
     await (snarkjs as any).wtns.calculate(
       { identityToken, expectedCommit },
       "/zkp/premium_membership.wasm",
       wtns,
-      { memorySize: 0 },
+      zkpOptions.witnessOptions,
     );
 
-    return await (snarkjs.groth16 as any).prove(
+    const proofResult = await (snarkjs.groth16 as any).prove(
       "/zkp/premium_membership.zkey",
       wtns,
       undefined,
-      { singleThread: true },
+      zkpOptions.proverOptions,
     );
+
+    return {
+      ...proofResult,
+      simdAccelerated: zkpOptions.simdEnabled,
+    };
   } finally {
     /*
      * Drop the witness reference as soon as the proof operation finishes.
@@ -138,6 +147,79 @@ async function generateProof(
 self.addEventListener("message", async (e: MessageEvent<WorkerMessage>) => {
   if (e.data.type === "cancel") {
     generation++;
+    return;
+  }
+
+// ── Browser Verification in Web Worker (#3480) ───────────────────────────
+  if (e.data.type === "verify" || e.data.type === "verify-student") {
+    const { proof, publicSignals, circuit } = e.data;
+    try {
+      const isStudent = circuit === "student_membership" || e.data.type === "verify-student" || publicSignals.length >= 2;
+      const vKeyUrl = isStudent
+        ? "/zkp/student_membership_vkey.json"
+        : "/zkp/verification_key.json";
+
+      const resp = await fetch(vKeyUrl);
+      const vKey = await resp.json();
+      const isValid = await snarkjs.groth16.verify(vKey, publicSignals, proof as any);
+      self.postMessage({ type: "verify_result", isValid });
+    } catch (error) {
+      self.postMessage({
+        type: "error",
+        error: sanitizeError(error),
+      });
+    }
+    return;
+  }
+
+  // ── Student Membership Groth16 Prover (#3480) ─────────────────────────────
+  if (e.data.type === "prove-student" || e.data.type === "prove_student") {
+    const myGeneration = ++generation;
+    const { secret, epoch, root, pathElements, pathIndices } = e.data;
+
+    if (!secret || !epoch || !root || !Array.isArray(pathElements) || !Array.isArray(pathIndices)) {
+      self.postMessage({ type: "error", error: "Invalid student membership proof parameters." });
+      return;
+    }
+
+    try {
+      self.postMessage({ type: "progress", stage: "generating" });
+
+      const { proof, publicSignals } = await snarkjs.groth16.fullProve(
+        {
+          secret: String(secret),
+          epoch: String(epoch),
+          root: String(root),
+          pathElements: pathElements.map(String),
+          pathIndices: pathIndices.map(String),
+        },
+        "/zkp/student_membership.wasm",
+        "/zkp/student_membership.zkey",
+      );
+
+      if (myGeneration !== generation) return;
+
+      self.postMessage({ type: "success", proof, publicSignals });
+    } catch (error) {
+      if (myGeneration !== generation) return;
+      const errorType = classifyError(error);
+      self.postMessage({
+        type: "error",
+        error: sanitizeError(error),
+        isOom: errorType === "oom",
+      });
+    } finally {
+      const g = globalThis as typeof globalThis & {
+        curve_bn128?: { terminate: () => Promise<void> };
+      };
+      if (g.curve_bn128) {
+        try {
+          await g.curve_bn128.terminate();
+        } catch {
+          // ignore cleanup errors
+        }
+      }
+    }
     return;
   }
 
@@ -271,4 +353,3 @@ self.addEventListener("message", async (e: MessageEvent<WorkerMessage>) => {
     }
     return;
   }
-});
