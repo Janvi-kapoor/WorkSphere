@@ -1,6 +1,6 @@
 "use client";
 
-import { TelemetryRecord } from "./telemetryQueue";
+import type { TelemetryRecord } from "./telemetry/types";
 
 const STORAGE_KEY = "worksphere:telemetry:unsent";
 
