@@ -28,7 +28,8 @@ export function retryFailedTelemetry() {
   try {
     const existingStr = localStorage.getItem(STORAGE_KEY);
     if (!existingStr) return;
-    const records = JSON.parse(existingStr) as TelemetryRecord[];
+    const parsed = JSON.parse(existingStr);
+    const records = Array.isArray(parsed) ? (parsed as TelemetryRecord[]) : [];
     localStorage.removeItem(STORAGE_KEY);
     records.forEach(flushToServer);
   } catch (err) {
