@@ -1,8 +1,5 @@
 /**
- * Rate Limiting — Upstash Redis (distributed) with in-memory fallback
- *
- * Production: Set UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN in env
- * Development: Falls back to an in-memory sliding window automatically
+ * Compatibility bridge: Re-export unified rate limiting implementations from @/lib/rateLimit.
  */
 
 import { auth } from "@clerk/nextjs/server";

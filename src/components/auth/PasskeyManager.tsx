@@ -33,7 +33,7 @@ import {
   savePasskeyChallengeToSession,
   clearPasskeyChallengeFromSession,
   setupPasskeyUnloadCleanup,
-} from "@/lib/passkey";
+} from "@/lib/auth/passkeys/client";
 
 export interface PasskeyItem {
   id: string;
@@ -90,7 +90,7 @@ export function PasskeyManager() {
   const [pending, setPending] = useState<PendingAction | null>(null);
   const [showStepUpModal, setShowStepUpModal] = useState(false);
   const [stepUpAction, setStepUpAction] = useState("passkey_management");
-  const [stepUpVerifiedToken, setStepUpVerifiedToken] = useState<string | null>(null);
+  const [_stepUpVerifiedToken, setStepUpVerifiedToken] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
   const handleCopyId = async (credentialId: string) => {
@@ -218,9 +218,14 @@ export function PasskeyManager() {
   };
 
   const handleDelete = (pk: PasskeyItem) => {
+    const credId = pk?.credentialId || pk?.id;
+    if (!pk || !credId || typeof credId !== "string" || !credId.trim()) {
+      setError("Invalid passkey credential ID. Cannot revoke passkey.");
+      return;
+    }
     if (!confirm("Are you sure you want to remove this passkey credential?"))
       return;
-    setPending({ action: "revoke", id: pk.id, name: pk.name });
+    setPending({ action: "revoke", id: credId, name: pk.name || "Passkey" });
   };
 
   const handleRotate = (pk: PasskeyItem) => {
@@ -247,6 +252,11 @@ export function PasskeyManager() {
       setEditName("");
       setSuccess("Passkey renamed.");
     } else if (action === "revoke") {
+      if (!id || typeof id !== "string" || !id.trim()) {
+        setError("Invalid passkey credential ID. Cannot revoke passkey.");
+        setPending(null);
+        return;
+      }
       const res = await fetch(`/api/auth/passkey/credentials/${id}`, {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },

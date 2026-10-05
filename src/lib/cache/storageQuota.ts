@@ -39,8 +39,9 @@ export function isQuotaExceededError(err: unknown): boolean {
 export function dispatchStorageQuotaWarning(source: string, error?: unknown): void {
   if (typeof window === "undefined") return;
 
+  const safeSource = typeof source === "string" && source.trim() ? source.trim() : "storage";
   const detail: StorageQuotaWarningDetail = {
-    source,
+    source: safeSource,
     errorName: (error as any)?.name ?? "QuotaExceededError",
     message: (error as any)?.message ?? "Storage quota exceeded",
     timestamp: Date.now(),
@@ -80,10 +81,10 @@ export async function clearStaleCaches(): Promise<{ cleared: string[]; errors: s
     errors.push(`hnswCache: ${err}`);
   }
 
-  // 3. Purge federated model weights
+  // 3. Purge federated model weights (default window keeps fresh weights)
   try {
     const { purgeStaleWeights } = await import("@/lib/federated/weightDb");
-    await purgeStaleWeights(0); // purge all weights older than 0ms
+    await purgeStaleWeights();
     cleared.push("federatedWeights");
   } catch (err) {
     errors.push(`federatedWeights: ${err}`);
