@@ -118,6 +118,7 @@ function memRateLimit(
   limit: number,
   windowMs: number = DEFAULT_WINDOW_MS,
 ): boolean {
+  if (!identifier || typeof identifier !== "string") return true;
   const now = Date.now();
   const start = now - windowMs;
 
