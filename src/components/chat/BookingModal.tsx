@@ -421,7 +421,7 @@ export function BookingModal({
           <button
             onClick={onClose}
             aria-label="Close dialog"
-            className="p-2 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-xl transition-colors"
+            className="p-2 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-xl transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-blue-500 dark:focus-visible:ring-offset-zinc-900"
           >
             <X className="w-5 h-5" />
           </button>
@@ -650,7 +650,7 @@ export function BookingModal({
               <button
                 type="submit"
                 disabled={!canSubmit}
-                className="w-full accent-bg text-white font-semibold py-3.5 rounded-xl flex items-center justify-center gap-2 hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+                className="w-full accent-bg text-white font-semibold py-3.5 rounded-xl flex items-center justify-center gap-2 hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-blue-500 dark:focus-visible:ring-offset-zinc-900"
               >
                 {isSubmitting && <Loader2 className="w-4 h-4 animate-spin" />}
                 {plannedDates.length > 1
@@ -752,7 +752,7 @@ export function BookingModal({
                         confirmation.ids[0],
                       )
                     }
-                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm font-medium bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700"
+                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm font-medium bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-blue-500 dark:focus-visible:ring-offset-zinc-900"
                     aria-label="Add to Calendar (.ics)"
                   >
                     <Calendar className="w-4 h-4" /> Add to Calendar (.ics)
@@ -760,7 +760,7 @@ export function BookingModal({
                   {confirmation.bookingId && (
                     <a
                       href={`/api/bookings/${confirmation.bookingId}/download`}
-                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm font-medium bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700"
+                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm font-medium bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-blue-500 dark:focus-visible:ring-offset-zinc-900"
                     >
                       <Download className="w-4 h-4" /> Receipt
                     </a>
@@ -771,13 +771,13 @@ export function BookingModal({
               <div className="flex w-full gap-2">
                 <Link
                   href="/dashboard"
-                  className="flex-1 py-3 rounded-xl border border-zinc-200 dark:border-zinc-700 font-medium hover:bg-zinc-50 dark:hover:bg-zinc-800"
+                  className="flex-1 py-3 rounded-xl border border-zinc-200 dark:border-zinc-700 font-medium hover:bg-zinc-50 dark:hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-blue-500 dark:focus-visible:ring-offset-zinc-900"
                 >
                   View my bookings
                 </Link>
                 <button
                   onClick={onClose}
-                  className="flex-1 py-3 rounded-xl accent-bg text-white font-semibold hover:opacity-90"
+                  className="flex-1 py-3 rounded-xl accent-bg text-white font-semibold hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-blue-500 dark:focus-visible:ring-offset-zinc-900"
                 >
                   Done
                 </button>

@@ -62,7 +62,7 @@ export function ScrollToTopButton() {
           ? "opacity-100 scale-100 pointer-events-auto"
           : "opacity-0 scale-75 pointer-events-none",
         // Focus ring (project standard)
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-blue-500 dark:focus-visible:ring-offset-zinc-950",
       ].join(" ")}
     >
       {/* Up-arrow SVG icon */}

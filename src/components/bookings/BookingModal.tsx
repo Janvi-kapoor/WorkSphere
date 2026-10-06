@@ -110,14 +110,14 @@ export function BookingModal({ venueId, venueName, onClose, onSuccess }: Booking
         <div className="mt-6 flex gap-3">
           <button 
             onClick={onClose}
-            className="flex-1 rounded-xl border border-white/10 p-3 text-zinc-300 hover:bg-white/5 transition"
+            className="flex-1 rounded-xl border border-white/10 p-3 text-zinc-300 hover:bg-white/5 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-blue-500 focus-visible:ring-offset-zinc-900"
           >
             Cancel
           </button>
           <button 
             onClick={handleReserve}
             disabled={loading}
-            className="flex-1 rounded-xl bg-violet-600 p-3 font-semibold text-white hover:bg-violet-700 disabled:opacity-50 transition"
+            className="flex-1 rounded-xl bg-violet-600 p-3 font-semibold text-white hover:bg-violet-700 disabled:opacity-50 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-blue-500 focus-visible:ring-offset-zinc-900"
           >
             {loading ? 'Confirming...' : 'Confirm Booking'}
           </button>
