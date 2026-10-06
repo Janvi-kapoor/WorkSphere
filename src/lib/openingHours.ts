@@ -111,7 +111,7 @@ export function getOpeningHoursStatus(
     if (dayIdx !== -1) {
       const prevName = DAYS_OF_WEEK[(dayIdx + 6) % 7];
       const prev = structured.periods[prevName];
-      if (prev && !prev.closed) {
+      if (prev && !prev.closed && prev.open && prev.close) {
         const [pOpenH, pOpenM] = prev.open.split(":").map(Number);
         const [pCloseH, pCloseM] = prev.close.split(":").map(Number);
         const pOpenMin = pOpenH * 60 + pOpenM;
@@ -123,7 +123,7 @@ export function getOpeningHoursStatus(
       }
     }
 
-    if (!isOpen && period && !period.closed) {
+    if (!isOpen && period && !period.closed && period.open && period.close) {
       const [openH, openM] = period.open.split(":").map(Number);
       const [closeH, closeM] = period.close.split(":").map(Number);
       const openMin = openH * 60 + openM;
