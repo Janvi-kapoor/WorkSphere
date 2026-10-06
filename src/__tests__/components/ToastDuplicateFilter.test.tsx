@@ -61,6 +61,29 @@ describe("Toast Duplicate Message Debounce (#1748)", () => {
     });
 
     fireEvent.click(button);
-    expect(screen.getAllByRole("alert")).toHaveLength(2);
+    // Identical error message updates/replaces rather than stacking duplicate toasts
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+    expect(screen.getByText("Sync failed")).toBeInTheDocument();
+  });
+
+  it("replaces existing identical toast without stacking multiple duplicates (#4558)", () => {
+    render(
+      <ToastProvider>
+        <TestConsumer />
+      </ToastProvider>,
+    );
+
+    const button = screen.getByTestId("trigger-toast");
+
+    fireEvent.click(button);
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+
+    // After timer advances, second trigger should still only have 1 toast rendered
+    act(() => {
+      jest.advanceTimersByTime(3500);
+    });
+
+    fireEvent.click(button);
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
   });
 });

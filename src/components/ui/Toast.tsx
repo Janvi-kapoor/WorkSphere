@@ -93,7 +93,9 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
             return updated;
           }
         }
-        return [...prev, { id, message, type, action, countdown }];
+        // Deduplicate: replace any existing toast with the same message or error key
+        const filtered = prev.filter((t) => t.message !== message);
+        return [...filtered, { id, message, type, action, countdown }];
       });
     },
     [],
