@@ -237,5 +237,95 @@ describe("BookingModal", () => {
         screen.queryByText("End time must be after start time."),
       ).not.toBeInTheDocument();
     });
+
+    it("prevents double-click submission and does not issue duplicate booking POST requests (#4368)", async () => {
+      const originalFetch = global.fetch;
+      const mockFetch = jest.fn().mockImplementation(
+        () =>
+          new Promise((resolve) =>
+            setTimeout(
+              () =>
+                resolve({
+                  ok: true,
+                  json: async () => ({ confirmationId: "conf-123" }),
+                }),
+              100,
+            ),
+          ),
+      );
+      global.fetch = mockFetch;
+
+      render(
+        <BookingModal
+          isOpen={true}
+          onClose={mockOnClose}
+          venue={mockVenue}
+          mode="booking"
+        />,
+      );
+
+      const dateInput = screen.getByLabelText("Date");
+      const startTimeInput = screen.getByTestId("booking-start-time");
+      const emailInput = screen.getByLabelText("Confirmation email");
+      const submitBtn = screen.getByRole("button", { name: /confirm booking/i });
+
+      fireEvent.change(dateInput, { target: { value: "2026-10-10" } });
+      fireEvent.change(startTimeInput, { target: { value: "10:00" } });
+      fireEvent.change(emailInput, { target: { value: "user@example.com" } });
+
+      fireEvent.click(submitBtn);
+      fireEvent.click(submitBtn);
+
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      global.fetch = originalFetch;
+    });
+  });
+
+  describe("Quick Duration Selector (#4406)", () => {
+    it("renders quick duration preset chips (30m, 1h, 2h, 4h, Full Day)", () => {
+      render(
+        <BookingModal
+          isOpen={true}
+          onClose={mockOnClose}
+          venue={mockVenue}
+          mode="booking"
+        />,
+      );
+
+      expect(screen.getByText("Quick duration")).toBeInTheDocument();
+      expect(screen.getByTestId("duration-preset-30m")).toBeInTheDocument();
+      expect(screen.getByTestId("duration-preset-1h")).toBeInTheDocument();
+      expect(screen.getByTestId("duration-preset-2h")).toBeInTheDocument();
+      expect(screen.getByTestId("duration-preset-4h")).toBeInTheDocument();
+      expect(screen.getByTestId("duration-preset-full-day")).toBeInTheDocument();
+    });
+
+    it("updates end time dynamically when a duration chip is clicked", () => {
+      render(
+        <BookingModal
+          isOpen={true}
+          onClose={mockOnClose}
+          venue={mockVenue}
+          mode="booking"
+        />,
+      );
+
+      const startTimeInput = screen.getByTestId("booking-start-time");
+      const endTimeInput = screen.getByTestId("booking-end-time");
+
+      fireEvent.change(startTimeInput, { target: { value: "10:00" } });
+
+      // Click 2h preset
+      fireEvent.click(screen.getByTestId("duration-preset-2h"));
+      expect(endTimeInput).toHaveValue("12:00");
+
+      // Click 4h preset
+      fireEvent.click(screen.getByTestId("duration-preset-4h"));
+      expect(endTimeInput).toHaveValue("14:00");
+
+      // Click Full Day preset (8h)
+      fireEvent.click(screen.getByTestId("duration-preset-full-day"));
+      expect(endTimeInput).toHaveValue("18:00");
+    });
   });
 });

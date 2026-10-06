@@ -21,6 +21,11 @@ export interface SyncQueueItem<T = unknown> {
   maxRetries: number;
   nextAttemptAt: number;
   lastError?: string;
+  failureReason?:
+    | "unrecoverable_client_error"
+    | "max_retries_exceeded"
+    | "storage_quota_exceeded"
+    | string;
 }
 
 export interface QueueConfig {
@@ -29,6 +34,7 @@ export interface QueueConfig {
   maxRetries: number;
   concurrency: number;
   jitterFactor: number;
+  maxQueueSize?: number;
 }
 
 export const DEFAULT_QUEUE_CONFIG: QueueConfig = {
@@ -37,6 +43,7 @@ export const DEFAULT_QUEUE_CONFIG: QueueConfig = {
   maxRetries: 5,
   concurrency: 3,
   jitterFactor: 0.5,
+  maxQueueSize: 5000,
 };
 
 export interface QueueStats {
@@ -64,6 +71,58 @@ export interface SyncQueueEvent {
   error?: Error;
 }
 
+export class SyncError extends Error {
+  public readonly status?: number;
+  public readonly isPermanent?: boolean;
+
+  constructor(message: string, status?: number, isPermanent?: boolean) {
+    super(message);
+    this.name = "SyncError";
+    this.status = status;
+    this.isPermanent =
+      isPermanent ??
+      (status !== undefined &&
+        status >= 400 &&
+        status < 500 &&
+        status !== 408 &&
+        status !== 429);
+  }
+}
+
+/**
+ * Determines whether an error is an unrecoverable client error (e.g. HTTP 400 Bad Request, 422 Unprocessable Entity)
+ * that should immediately transition to dead-letter queue without pointless retries.
+ */
+export function isPermanentClientError(err: unknown): boolean {
+  if (!err) return false;
+  if (typeof err === "object") {
+    const maybeErr = err as {
+      status?: number;
+      statusCode?: number;
+      isPermanent?: boolean;
+      message?: string;
+    };
+    if (maybeErr.isPermanent === true) return true;
+    const status = maybeErr.status ?? maybeErr.statusCode;
+    if (typeof status === "number") {
+      return status >= 400 && status < 500 && status !== 408 && status !== 429;
+    }
+    if (typeof maybeErr.message === "string") {
+      const msg = maybeErr.message.toLowerCase();
+      if (
+        msg.includes("400") ||
+        msg.includes("422") ||
+        msg.includes("validation error") ||
+        msg.includes("bad request") ||
+        msg.includes("unprocessable entity")
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 /**
  * Calculates exponential backoff with full jitter to avoid thundering-herd problems.
  * Formula: delay = min(maxDelay, baseDelay * 2^attempt) + randomJitter
@@ -84,9 +143,38 @@ export function calculateBackoff(
 }
 
 /**
- * Generates a unique queue item identifier.
+ * Generates a deterministic idempotency key for queued offline actions
+ * based on entity type and payload content.
  */
-function generateId(): string {
+export function generateIdempotencyKey<T = unknown>(type: string, payload: T): string {
+  try {
+    const payloadStr =
+      typeof payload === "string"
+        ? payload
+        : payload === null || payload === undefined
+          ? ""
+          : typeof payload === "object"
+            ? JSON.stringify(payload, Object.keys(payload).sort())
+            : String(payload);
+
+    let hash = 0;
+    const str = `${type}:${payloadStr}`;
+    for (let i = 0; i < str.length; i++) {
+      const char = str.charCodeAt(i);
+      hash = (hash << 5) - hash + char;
+      hash |= 0;
+    }
+    const hexHash = Math.abs(hash).toString(36);
+    return `sync_${type}_${hexHash}`;
+  } catch {
+    return `sync_${type}_${Date.now()}`;
+  }
+}
+
+/**
+ * Generates a unique fallback queue item identifier.
+ */
+export function generateId(): string {
   return `sync_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
 }
 
@@ -103,15 +191,30 @@ export class OfflineSyncQueueManager {
   }
 
   /**
-   * Enqueues an action payload for offline sync.
+   * Enqueues an action payload for offline sync using deterministic idempotency keys
+   * to prevent duplicate queue entries.
    */
   public enqueue<T = unknown>(
     type: string,
     payload: T,
     options: { maxRetries?: number; id?: string } = {},
   ): SyncQueueItem<T> {
+    if (this.config.maxQueueSize && this.items.size >= this.config.maxQueueSize) {
+      throw new Error(`Sync queue capacity exceeded: max ${this.config.maxQueueSize} items.`);
+    }
+
     const now = Date.now();
-    const id = options.id || generateId();
+    const id = options.id || generateIdempotencyKey(type, payload);
+
+    const existing = this.items.get(id);
+    if (
+      existing &&
+      (existing.status === "pending" ||
+        existing.status === "processing" ||
+        existing.status === "retry")
+    ) {
+      return existing as SyncQueueItem<T>;
+    }
 
     const item: SyncQueueItem<T> = {
       id,
@@ -258,6 +361,7 @@ export class OfflineSyncQueueManager {
         item.nextAttemptAt = now;
         item.updatedAt = now;
         item.lastError = undefined;
+        item.failureReason = undefined;
         count++;
         this.emitEvent("queue:progress", item);
       }
@@ -269,6 +373,7 @@ export class OfflineSyncQueueManager {
           item.nextAttemptAt = now;
           item.updatedAt = now;
           item.lastError = undefined;
+          item.failureReason = undefined;
           count++;
         }
       }
@@ -383,6 +488,7 @@ export class OfflineSyncQueueManager {
       item.status = "completed";
       item.updatedAt = Date.now();
       item.lastError = undefined;
+      item.failureReason = undefined;
       this.emitEvent("queue:item_success", item);
     } catch (err) {
       const errorMsg =
@@ -390,16 +496,29 @@ export class OfflineSyncQueueManager {
       item.updatedAt = Date.now();
       item.lastError = errorMsg;
 
-      if (item.attempts >= item.maxRetries) {
-        // Exceeded maximum retry attempts -> escalate to Dead-Letter Queue
+      const permanent = isPermanentClientError(err);
+
+      if (permanent || item.attempts >= item.maxRetries) {
+        // Permanent 4xx client error OR exceeded maximum retry attempts -> escalate to Dead-Letter Queue
         item.status = "dead_letter";
-        this.emitEvent("queue:item_dlq", item, err instanceof Error ? err : new Error(errorMsg));
+        item.failureReason = permanent
+          ? "unrecoverable_client_error"
+          : "max_retries_exceeded";
+        this.emitEvent(
+          "queue:item_dlq",
+          item,
+          err instanceof Error ? err : new Error(errorMsg),
+        );
       } else {
         // Schedule next retry with exponential backoff & jitter
         const delay = calculateBackoff(item.attempts, this.config);
         item.status = "retry";
         item.nextAttemptAt = Date.now() + delay;
-        this.emitEvent("queue:item_retry", item, err instanceof Error ? err : new Error(errorMsg));
+        this.emitEvent(
+          "queue:item_retry",
+          item,
+          err instanceof Error ? err : new Error(errorMsg),
+        );
       }
     }
   }
