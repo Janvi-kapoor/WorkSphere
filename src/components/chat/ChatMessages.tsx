@@ -29,6 +29,7 @@ import {
   Clock,
   Trash2,
   X,
+  Languages,
 } from "lucide-react";
 import { usePreferenceReranking } from "@/hooks/usePreferenceReranking";
 import { useKMeansClustering } from "@/hooks/useKMeansClustering";
@@ -1131,6 +1132,9 @@ export function MessageList({
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   const { speakingMessageId, speakingSentenceIndex } = useSpeechSynthesis();
+  const [translatedMessages, setTranslatedMessages] = useState<
+    Record<string, { text: string; sourceLang: string }>
+  >({});
 
   const scrollToBottomIfNeeded = useCallback(() => {
     const container = containerRef.current;
@@ -1237,19 +1241,68 @@ export function MessageList({
                     : "bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-50 border-zinc-100 dark:border-zinc-700 rounded-tl-none"
                 }`}
               >
-                {message.role === "assistant" && (
-                  <div className="absolute top-2 right-2 flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity z-10">
-                    <ReadAloudButton text={message.content} />
-                    <CopyMessageButton text={message.content} />
+                <div className="absolute top-2 right-2 flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity z-10">
+                  {message.role === "assistant" && (
+                    <ReadAloudButton
+                      text={
+                        translatedMessages[message.id]?.text || message.content
+                      }
+                    />
+                  )}
+                  <MessageTranslateButton
+                    messageId={message.id}
+                    originalText={message.content}
+                    onTranslationChange={(translated, sourceLang) => {
+                      setTranslatedMessages((prev) => {
+                        if (!translated) {
+                          const next = { ...prev };
+                          delete next[message.id];
+                          return next;
+                        }
+                        return {
+                          ...prev,
+                          [message.id]: { text: translated, sourceLang },
+                        };
+                      });
+                    }}
+                  />
+                  <CopyMessageButton
+                    text={
+                      translatedMessages[message.id]?.text || message.content
+                    }
+                  />
+                </div>
+                {translatedMessages[message.id] && (
+                  <div className="mb-1 flex items-center justify-between gap-2 border-b border-zinc-200/50 dark:border-zinc-700/50 pb-1 text-[11px] text-blue-500 font-medium">
+                    <span className="flex items-center gap-1">
+                      <Languages className="w-3 h-3" />
+                      Translated from {translatedMessages[message.id].sourceLang}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setTranslatedMessages((prev) => {
+                          const next = { ...prev };
+                          delete next[message.id];
+                          return next;
+                        });
+                      }}
+                      className="text-[10px] text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 underline"
+                    >
+                      Show original
+                    </button>
                   </div>
                 )}
                 <div
-                  className={`text-sm font-medium leading-relaxed ${message.role === "assistant" ? "pr-12" : ""}`}
+                  className={`text-sm font-medium leading-relaxed pr-16`}
                 >
                   {message.role === "assistant" ? (
                     <div className="relative">
                       <MessageRenderer
-                        content={message.content}
+                        content={
+                          translatedMessages[message.id]?.text ||
+                          message.content
+                        }
                         speakingSentenceIndex={
                           speakingMessageId === message.id
                             ? speakingSentenceIndex
@@ -1266,7 +1319,7 @@ export function MessageList({
                     </div>
                   ) : (
                     <span className="whitespace-pre-wrap">
-                      {message.content}
+                      {translatedMessages[message.id]?.text || message.content}
                     </span>
                   )}
                 </div>
@@ -1426,6 +1479,88 @@ function CopyMessageButton({ text }: { text: string }) {
         <Check className="w-3.5 h-3.5 text-green-500" />
       ) : (
         <Copy className="w-3.5 h-3.5" />
+      )}
+    </button>
+  );
+}
+
+// In-memory cache for translated collaborative chat messages to prevent duplicate network calls (#4602)
+const translationMemoryCache = new Map<string, string>();
+
+export function MessageTranslateButton({
+  messageId,
+  originalText,
+  targetLanguage = "en",
+  onTranslationChange,
+}: {
+  messageId: string;
+  originalText: string;
+  targetLanguage?: string;
+  onTranslationChange?: (translated: string | null, sourceLanguage: string) => void;
+}) {
+  const [isTranslating, setIsTranslating] = useState(false);
+  const [isTranslated, setIsTranslated] = useState(false);
+  const [translatedText, setTranslatedText] = useState<string | null>(null);
+
+  const handleToggleTranslate = async () => {
+    if (isTranslated) {
+      setIsTranslated(false);
+      onTranslationChange?.(null, "Original");
+      return;
+    }
+
+    const cacheKey = `${messageId}:${targetLanguage}:${originalText}`;
+    if (translationMemoryCache.has(cacheKey)) {
+      const cached = translationMemoryCache.get(cacheKey)!;
+      setTranslatedText(cached);
+      setIsTranslated(true);
+      onTranslationChange?.(cached, "Auto-detected");
+      return;
+    }
+
+    setIsTranslating(true);
+    try {
+      const res = await fetch("/api/translate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: originalText,
+          targetLanguage: targetLanguage,
+        }),
+      });
+
+      if (!res.ok) throw new Error("Translation request failed");
+      const data = await res.json();
+      if (data.translatedText) {
+        translationMemoryCache.set(cacheKey, data.translatedText);
+        setTranslatedText(data.translatedText);
+        setIsTranslated(true);
+        onTranslationChange?.(data.translatedText, "Auto-detected");
+      }
+    } catch (err) {
+      console.error("Message auto-translation error:", err);
+    } finally {
+      setIsTranslating(false);
+    }
+  };
+
+  return (
+    <button
+      onClick={handleToggleTranslate}
+      disabled={isTranslating}
+      className={`p-1.5 rounded-md text-xs flex items-center gap-1 transition-all ${
+        isTranslated
+          ? "accent-text bg-blue-50 dark:bg-blue-900/30 opacity-100"
+          : "text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-700 opacity-0 group-hover:opacity-100 focus-within:opacity-100"
+      }`}
+      title={isTranslated ? "Show original text" : "Translate message"}
+      aria-label={isTranslated ? "Show original text" : "Translate message"}
+      data-testid={`translate-btn-${messageId}`}
+    >
+      {isTranslating ? (
+        <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-500" />
+      ) : (
+        <Languages className="w-3.5 h-3.5" />
       )}
     </button>
   );
