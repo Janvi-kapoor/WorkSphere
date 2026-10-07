@@ -20,6 +20,7 @@ const PREFETCH_CACHE_NAME = "worksphere-prefetch-v1";
 const OFFLINE_URL = "/offline";
 const AVAILABILITY_SYNC_TAG = "availability-sync";
 const PERIODIC_AVAILABILITY_TAG = "workspace-availability";
+const PERIODIC_FAVORITES_TAG = "refresh-favorite-venues";
 
 // Cap image cache at 20MB so iOS Safari PWA (~50MB quota) doesn't get killed.
 const MAX_IMAGE_CACHE_BYTES = 20 * 1024 * 1024;
@@ -209,12 +210,13 @@ self.addEventListener("fetch", (event) => {
 
 async function handleFetch(request, event) {
   const isVenuesApi = request.url.includes("/api/venues");
+  const isReservationsApi = request.url.includes("/api/reservations/availability");
   const isMapTile =
     request.url.includes("tile.openstreetmap.org") ||
     request.url.includes("basemaps.cartocdn.com");
   const isExternalAsset = request.url.includes("images.unsplash.com");
 
-  if (isVenuesApi) {
+  if (isVenuesApi || isReservationsApi) {
     try {
       const response = await fetch(request);
       if (response.ok) {
@@ -224,7 +226,26 @@ async function handleFetch(request, event) {
       return response;
     } catch {
       const cached = await caches.match(request);
-      return cached || new Response("Offline", { status: 503 });
+      if (cached) return cached;
+      if (isReservationsApi) {
+        return new Response(
+          JSON.stringify({ seats: [], offline: true, cached: true }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          },
+        );
+      }
+      if (isVenuesApi) {
+        return new Response(
+          JSON.stringify({ venues: [], offline: true, cached: true }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          },
+        );
+      }
+      return new Response("Offline", { status: 503 });
     }
   } else if (isMapTile) {
     const cache = await caches.open(MAP_TILE_CACHE_NAME);
@@ -314,6 +335,9 @@ self.addEventListener("sync", (event) => {
   if (event.tag === "sync-ratings") {
     event.waitUntil(syncRatings());
   }
+  if (event.tag === "sync-reviews") {
+    event.waitUntil(syncPendingReviews());
+  }
   if (event.tag === "sync-conversations") {
     event.waitUntil(syncConversations());
   }
@@ -325,10 +349,13 @@ self.addEventListener("sync", (event) => {
   }
 });
 
-// Periodic Background Sync for workspace availability (Issue #1126)
+// Periodic Background Sync for workspace availability (Issue #1126) and favorite venues occupancy (Issue #3957)
 self.addEventListener("periodicsync", (event) => {
   if (event.tag === PERIODIC_AVAILABILITY_TAG) {
     event.waitUntil(syncAvailability());
+  }
+  if (event.tag === PERIODIC_FAVORITES_TAG) {
+    event.waitUntil(syncFavoriteVenuesOccupancy());
   }
 });
 
@@ -550,6 +577,222 @@ async function syncRatings() {
     console.error("Sync ratings failed:", error);
   } finally {
     isSyncingRatings = false;
+  }
+}
+
+let isSyncingReviews = false;
+// Sync offline venue reviews when back online (Issue #3366)
+async function syncPendingReviews() {
+  if (isSyncingReviews) return;
+  isSyncingReviews = true;
+  try {
+    await withIdbLock(async () => {
+      const db = await openIndexedDB();
+      if (!db.objectStoreNames.contains("pendingReviews")) return;
+
+      const tx = db.transaction("pendingReviews", "readonly");
+      const store = tx.objectStore("pendingReviews");
+      const request = store.getAll();
+
+      const items = await new Promise((resolve, reject) => {
+        request.onsuccess = () => resolve(request.result || []);
+        request.onerror = () => reject(request.error);
+      });
+
+      const candidates = items.filter(
+        (r) =>
+          r.status === "PENDING" ||
+          r.status === "FAILED" ||
+          (r.status === "SYNCING" && Date.now() - r.createdAt > 60000),
+      );
+      candidates.sort((a, b) => a.createdAt - b.createdAt);
+
+      for (const item of candidates) {
+        // Mark as SYNCING in IndexedDB
+        item.status = "SYNCING";
+        const writeTx = db.transaction("pendingReviews", "readwrite");
+        writeTx.objectStore("pendingReviews").put(item);
+        await new Promise((res) => {
+          writeTx.oncomplete = () => res();
+          writeTx.onerror = () => res();
+        });
+
+        // Acquire CSRF token from safe GET endpoint
+        let csrfToken = "";
+        try {
+          const csrfRes = await fetch("/api/auth/csrf-token", { credentials: "same-origin" });
+          if (csrfRes.ok) {
+            const csrfData = await csrfRes.json();
+            csrfToken = csrfData.csrfToken || "";
+          }
+        } catch (err) {
+          console.warn("[SW] Failed to fetch CSRF token for review sync:", err);
+        }
+
+        try {
+          const headers = {
+            "Content-Type": "application/json",
+            "X-Idempotency-Key": item.id,
+          };
+          if (csrfToken) {
+            headers["x-csrf-token"] = csrfToken;
+          }
+
+          const response = await fetch(
+            `/api/venues/${encodeURIComponent(item.venueId)}/reviews`,
+            {
+              method: "POST",
+              headers,
+              credentials: "same-origin",
+              body: JSON.stringify({
+                ...item.data,
+                idempotencyKey: item.id,
+                reviewId: item.reviewId,
+                baseVenueUpdatedAt: item.baseVenueUpdatedAt,
+                baseReviewUpdatedAt: item.baseReviewUpdatedAt,
+              }),
+            },
+          );
+
+          if (response.ok) {
+            // Delete from pendingReviews store
+            const delTx = db.transaction("pendingReviews", "readwrite");
+            delTx.objectStore("pendingReviews").delete(item.id);
+            await new Promise((res) => {
+              delTx.oncomplete = () => res();
+              delTx.onerror = () => res();
+            });
+
+            // Notify open window clients
+            const windowClients = await self.clients.matchAll({
+              type: "window",
+              includeUncontrolled: true,
+            });
+            for (const client of windowClients) {
+              client.postMessage({
+                type: "REVIEW_SYNC_SUCCESS",
+                id: item.id,
+                venueId: item.venueId,
+                venueName: item.venueName,
+              });
+            }
+            continue;
+          }
+
+          if (response.status === 409) {
+            // Conflict detected: preserve local item and store server conflict details
+            const conflictJson = await response.json().catch(() => ({}));
+            item.status = "CONFLICT";
+            item.conflictDetails = conflictJson;
+            const putTx = db.transaction("pendingReviews", "readwrite");
+            putTx.objectStore("pendingReviews").put(item);
+            await new Promise((res) => {
+              putTx.oncomplete = () => res();
+              putTx.onerror = () => res();
+            });
+
+            const windowClients = await self.clients.matchAll({
+              type: "window",
+              includeUncontrolled: true,
+            });
+            for (const client of windowClients) {
+              client.postMessage({
+                type: "REVIEW_SYNC_CONFLICT",
+                id: item.id,
+                venueId: item.venueId,
+                venueName: item.venueName,
+                conflictDetails: conflictJson,
+              });
+            }
+            continue;
+          }
+
+          if (response.status === 401 || response.status === 403) {
+            // Unauthorized or CSRF token mismatch: session needs refresh. Do NOT delete review.
+            item.status = "AUTH_REQUIRED";
+            const putTx = db.transaction("pendingReviews", "readwrite");
+            putTx.objectStore("pendingReviews").put(item);
+            await new Promise((res) => {
+              putTx.oncomplete = () => res();
+              putTx.onerror = () => res();
+            });
+
+            const windowClients = await self.clients.matchAll({
+              type: "window",
+              includeUncontrolled: true,
+            });
+            for (const client of windowClients) {
+              client.postMessage({
+                type: "REVIEW_SYNC_AUTH_REQUIRED",
+                id: item.id,
+                venueId: item.venueId,
+              });
+            }
+            break;
+          }
+
+          if (response.status >= 500) {
+            // Transient 5xx server error: exponential backoff retry (up to 3 times)
+            const nextRetry = (item.retryCount || 0) + 1;
+            item.retryCount = nextRetry;
+            item.status = nextRetry >= 3 ? "FAILED" : "PENDING";
+            const putTx = db.transaction("pendingReviews", "readwrite");
+            putTx.objectStore("pendingReviews").put(item);
+            await new Promise((res) => {
+              putTx.oncomplete = () => res();
+              putTx.onerror = () => res();
+            });
+            continue;
+          }
+
+          // 400, 422 etc - permanent validation error
+          item.status = "FAILED";
+          const putTx = db.transaction("pendingReviews", "readwrite");
+          putTx.objectStore("pendingReviews").put(item);
+          await new Promise((res) => {
+            putTx.oncomplete = () => res();
+            putTx.onerror = () => res();
+          });
+
+          const windowClients = await self.clients.matchAll({
+            type: "window",
+            includeUncontrolled: true,
+          });
+          for (const client of windowClients) {
+            client.postMessage({
+              type: "REVIEW_SYNC_FAILED",
+              id: item.id,
+              venueId: item.venueId,
+              error: "Validation error",
+            });
+          }
+        } catch (error) {
+          if (isNetworkError(error)) {
+            console.warn(`[SW] syncPendingReviews: Network error for ${item.id} — preserving in queue.`);
+            item.status = "PENDING";
+            const putTx = db.transaction("pendingReviews", "readwrite");
+            putTx.objectStore("pendingReviews").put(item);
+            await new Promise((res) => {
+              putTx.oncomplete = () => res();
+              putTx.onerror = () => res();
+            });
+            break;
+          }
+
+          item.status = "FAILED";
+          const putTx = db.transaction("pendingReviews", "readwrite");
+          putTx.objectStore("pendingReviews").put(item);
+          await new Promise((res) => {
+            putTx.oncomplete = () => res();
+            putTx.onerror = () => res();
+          });
+        }
+      }
+    });
+  } catch (err) {
+    console.error("[SW] syncPendingReviews failed:", err);
+  } finally {
+    isSyncingReviews = false;
   }
 }
 
@@ -854,13 +1097,127 @@ async function syncAvailability() {
   }
 }
 
+// Periodic Background Sync: refresh favorite venue occupancy cache every 12h (Issue #3957)
+let isSyncingFavoriteOccupancy = false;
+async function syncFavoriteVenuesOccupancy() {
+  if (isSyncingFavoriteOccupancy) return;
+  isSyncingFavoriteOccupancy = true;
+
+  try {
+    await withIdbLock(async () => {
+      // 1. Fetch fresh availability/occupancy delta for saved/favorite venues
+      const response = await fetch("/api/availability/delta", {
+        credentials: "include",
+      });
+
+      if (!response.ok) return;
+
+      const { venues } = await response.json();
+      if (!Array.isArray(venues) || venues.length === 0) return;
+
+      // 2. Open CacheStorage to update cached responses
+      const cache = await caches.open(CACHE_NAME);
+
+      // Cache the fresh delta response directly
+      await cache.put(
+        "/api/availability/delta",
+        new Response(JSON.stringify({ venues }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+
+      // Cache individual venue occupancy / details endpoints
+      for (const venue of venues) {
+        if (!venue.venueId) continue;
+        const venueUrl = `/api/venues/${venue.venueId}`;
+        const venuePayload = {
+          id: venue.venueId,
+          name: venue.venueName,
+          currentOccupancy: venue.count,
+          maxCapacity: venue.capacity,
+          occupancyStatus: venue.status,
+          updatedAt: new Date().toISOString(),
+        };
+
+        await cache.put(
+          venueUrl,
+          new Response(JSON.stringify(venuePayload), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+
+      // 3. Update IndexedDB offline storage if stores exist
+      const db = await openIndexedDB();
+      const storeNames = db.objectStoreNames;
+
+      // Update availabilityDeltas store
+      if (storeNames.contains("availabilityDeltas")) {
+        const tx = db.transaction("availabilityDeltas", "readwrite");
+        const store = tx.objectStore("availabilityDeltas");
+        for (const venue of venues) {
+          store.put({
+            venueId: venue.venueId,
+            venueName: venue.venueName,
+            currentCount: venue.count,
+            currentCapacity: venue.capacity,
+            currentStatus: venue.status,
+            timestamp: Date.now(),
+          });
+        }
+        await new Promise((resolve) => {
+          tx.oncomplete = resolve;
+          tx.onerror = resolve;
+        });
+      }
+
+      // Update favorites / venues store occupancy stats
+      const targetStore = storeNames.contains("favorites")
+        ? "favorites"
+        : storeNames.contains("venues")
+        ? "venues"
+        : null;
+
+      if (targetStore) {
+        const tx = db.transaction(targetStore, "readwrite");
+        const store = tx.objectStore(targetStore);
+        for (const venue of venues) {
+          const req = store.get(venue.venueId);
+          req.onsuccess = () => {
+            const item = req.result;
+            if (item) {
+              item.currentOccupancy = venue.count;
+              item.maxCapacity = venue.capacity;
+              item.occupancyStatus = venue.status;
+              item.lastOccupancySync = Date.now();
+              store.put(item);
+            }
+          };
+        }
+        await new Promise((resolve) => {
+          tx.oncomplete = resolve;
+          tx.onerror = resolve;
+        });
+      }
+
+      console.log(`[SW] Successfully synced occupancy cache for ${venues.length} favorite venues`);
+    });
+  } catch (error) {
+    console.error("[SW] Favorite venues occupancy sync failed:", error);
+  } finally {
+    isSyncingFavoriteOccupancy = false;
+  }
+}
+
 // IndexedDB helpers
 let swDb = null;
 function openIndexedDB() {
   if (swDb) return Promise.resolve(swDb);
   return new Promise((resolve, reject) => {
     try {
-      const request = indexedDB.open("worksphere-offline", 6);
+      const request = indexedDB.open("worksphere-offline", 7);
 
       request.onblocked = () => {
         console.warn("[SW] IndexedDB upgrade blocked");
@@ -951,6 +1308,24 @@ function openIndexedDB() {
             keyPath: "venueId",
           });
           deltaStore.createIndex("timestamp", "timestamp", { unique: false });
+        }
+
+// Recently viewed venues store (Issue #3512)
+        if (!db.objectStoreNames.contains("recentlyViewedVenues")) {
+          const recentStore = db.createObjectStore("recentlyViewedVenues", {
+            keyPath: "id",
+          });
+          recentStore.createIndex("viewedAt", "viewedAt", { unique: false });
+        }
+
+        // Dedicated offline reviews store (Issue #3366)
+        if (!db.objectStoreNames.contains("pendingReviews")) {
+          const reviewStore = db.createObjectStore("pendingReviews", {
+            keyPath: "id",
+          });
+          reviewStore.createIndex("venueId", "venueId", { unique: false });
+          reviewStore.createIndex("status", "status", { unique: false });
+          reviewStore.createIndex("createdAt", "createdAt", { unique: false });
         }
       };
     } catch (err) {

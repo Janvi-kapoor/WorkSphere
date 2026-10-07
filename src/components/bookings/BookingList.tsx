@@ -9,8 +9,18 @@ import {
   Inbox,
   Loader2,
   MapPin,
+  QrCode,
+  RefreshCw,
+  Smartphone,
 } from "lucide-react";
 import { getCalendarUrls, downloadICS } from "@/lib/calendar";
+import { BookingHistoryList } from "@/app/dashboard/BookingHistoryList";
+import { ExportBookingsCSVButton } from "@/components/bookings/ExportBookingsCSVButton";
+import { RescheduleModal } from "@/components/bookings/RescheduleModal";
+import { SplitBillModal } from "@/components/bookings/SplitBillModal";
+import { GeoCheckInReminderBanner } from "@/components/bookings/GeoCheckInReminderBanner";
+import { MobileWalletPassModal } from "@/components/bookings/MobileWalletPassModal";
+import { CopyBookingReferenceButton } from "@/components/bookings/CopyBookingReferenceButton";
 
 export interface BookingSummary {
   id: string;
@@ -20,11 +30,16 @@ export interface BookingSummary {
   status?: "CONFIRMED" | "PENDING" | "CANCELLED";
   seatNumber?: string | null;
   duration?: number | null;
+  timeZone?: string | null;
   createdAt: string;
+  venueId?: string;
   venue: {
+    id?: string;
     name: string;
     category: string;
     address: string | null;
+    latitude?: number;
+    longitude?: number;
   } | null;
 }
 
@@ -59,6 +74,13 @@ export function BookingList({
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [cancellingId, setCancellingId] = useState<string | null>(null);
   const [isExporting, setIsExporting] = useState(false);
+  const [reschedulingBooking, setReschedulingBooking] =
+    useState<BookingSummary | null>(null);
+  const [splitBillBooking, setSplitBillBooking] =
+    useState<BookingSummary | null>(null);
+  const [walletBooking, setWalletBooking] = useState<BookingSummary | null>(
+    null,
+  );
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -204,13 +226,22 @@ export function BookingList({
                 {cancelled ? "Cancelled" : future ? "Upcoming" : "Completed"}
               </span>
             </div>
-            <p className="text-sm text-zinc-600 dark:text-zinc-400 mt-0.5">
-              {booking.date} · {booking.time}
-              {booking.seatNumber ? ` · Seat ${booking.seatNumber}` : ""}
-              <span className="ml-2 font-mono text-xs text-zinc-400">
-                {booking.confirmationId}
+            <div className="flex flex-wrap items-center gap-2 text-sm text-zinc-600 dark:text-zinc-400 mt-0.5">
+              <span>
+                {booking.date} · {booking.time}
+                {booking.seatNumber ? ` · Seat ${booking.seatNumber}` : ""}
               </span>
-            </p>
+              <div className="inline-flex items-center gap-1">
+                <span className="font-mono text-xs text-zinc-400">
+                  {booking.confirmationId}
+                </span>
+                <CopyBookingReferenceButton
+                  referenceId={booking.confirmationId}
+                  tooltipPosition="top"
+                  className="!p-1 !rounded-md"
+                />
+              </div>
+            </div>
             {address && (
               <p className="text-xs text-zinc-500 flex items-center gap-1 mt-1 truncate">
                 <MapPin className="w-3 h-3 shrink-0" />
@@ -229,6 +260,14 @@ export function BookingList({
             <Download className="w-3.5 h-3.5" />
             Receipt
           </a>
+          <a
+            href={`/api/bookings/${booking.id}/itinerary`}
+            className={chipClass}
+            aria-label="Export booking itinerary as PDF with QR code verification badge"
+          >
+            <QrCode className="w-3.5 h-3.5 text-blue-500" />
+            Itinerary PDF
+          </a>
           {future && (
             <>
               <a
@@ -238,6 +277,8 @@ export function BookingList({
                     address,
                     booking.date,
                     booking.time,
+                    booking.duration || 60,
+                    booking.timeZone ?? undefined,
                   ).googleUrl
                 }
                 target="_blank"
@@ -248,20 +289,46 @@ export function BookingList({
                 Google Calendar
               </a>
               <button
+                type="button"
                 onClick={() =>
-                  downloadICS(
-                    venueName,
-                    address,
-                    booking.date,
-                    booking.time,
-                    booking.duration || 60,
-                    booking.confirmationId,
-                  )
+                  downloadICS(venueName, address, booking.date, booking.time, {
+                    durationMinutes: booking.duration || 60,
+                    confirmationId: booking.confirmationId,
+                    timezone: booking.timeZone ?? undefined,
+                  })
                 }
                 className={chipClass}
+                aria-label={`Download iCalendar file for booking ${booking.confirmationId}`}
               >
                 <Calendar className="w-3.5 h-3.5" />
-                .ics
+                Add to Calendar (.ics)
+              </button>
+              <button
+                type="button"
+                onClick={() => setReschedulingBooking(booking)}
+                className={chipClass}
+                aria-label={`Reschedule or extend booking ${booking.confirmationId}`}
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                Reschedule / Extend
+              </button>
+              <button
+                type="button"
+                onClick={() => setSplitBillBooking(booking)}
+                className={chipClass}
+                aria-label={`Split bill & generate guest payment links for booking ${booking.confirmationId}`}
+              >
+                <span className="text-xs">💳</span>
+                Split Bill &amp; Passes
+              </button>
+              <button
+                type="button"
+                onClick={() => setWalletBooking(booking)}
+                className={chipClass}
+                aria-label={`Add booking ${booking.confirmationId} to Apple or Google Wallet`}
+              >
+                <Smartphone className="w-3.5 h-3.5 text-blue-500" />
+                Apple / Google Pass
               </button>
               <button
                 onClick={() => cancelBooking(booking)}
@@ -322,6 +389,8 @@ export function BookingList({
 
   return (
     <div className="space-y-5">
+      <GeoCheckInReminderBanner bookings={bookings} onCheckInSuccess={load} />
+
       {message && (
         <p
           role="status"
@@ -330,21 +399,44 @@ export function BookingList({
           {message.text}
         </p>
       )}
-      {upcoming.length > 0 && (
-        <section>
-          <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500 mb-2">
-            Upcoming
-          </h3>
-          <ul className="space-y-3">{upcoming.map(renderBooking)}</ul>
-        </section>
-      )}
-      {rest.length > 0 && (
-        <section>
-          <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500 mb-2">
-            Past &amp; cancelled
-          </h3>
-          <ul className="space-y-3">{rest.map(renderBooking)}</ul>
-        </section>
+      {bookings.length > 10 ? (
+        <BookingHistoryList
+          bookings={bookings}
+          onCancelBooking={cancelBooking}
+          selectedIds={selectedIds}
+          onToggleSelected={toggleSelected}
+          cancellingId={cancellingId}
+        />
+      ) : (
+        <>
+          <div className="flex items-center justify-between pb-1">
+            <span className="text-xs text-zinc-500 font-medium">
+              {bookings.length} {bookings.length === 1 ? "booking" : "bookings"}{" "}
+              recorded
+            </span>
+            <ExportBookingsCSVButton
+              bookings={bookings}
+              label="Export CSV"
+              variant="outline"
+            />
+          </div>
+          {upcoming.length > 0 && (
+            <section>
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500 mb-2">
+                Upcoming
+              </h3>
+              <ul className="space-y-3">{upcoming.map(renderBooking)}</ul>
+            </section>
+          )}
+          {rest.length > 0 && (
+            <section>
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500 mb-2">
+                Past &amp; cancelled
+              </h3>
+              <ul className="space-y-3">{rest.map(renderBooking)}</ul>
+            </section>
+          )}
+        </>
       )}
 
       {selectedIds.size > 0 && (
@@ -370,6 +462,47 @@ export function BookingList({
             </button>
           </div>
         </div>
+      )}
+
+      <RescheduleModal
+        booking={reschedulingBooking}
+        isOpen={Boolean(reschedulingBooking)}
+        onClose={() => setReschedulingBooking(null)}
+        onSuccess={(updated) => {
+          setBookings((prev) =>
+            prev.map((b) =>
+              b.id === updated.id || b.confirmationId === updated.confirmationId
+                ? {
+                    ...b,
+                    date: updated.date,
+                    time: updated.time,
+                    duration: updated.duration,
+                    seatNumber: updated.seatNumber,
+                  }
+                : b,
+            ),
+          );
+          setMessage({
+            kind: "ok",
+            text: `Booking ${updated.confirmationId} rescheduled to ${updated.date} at ${updated.time}.`,
+          });
+        }}
+      />
+
+      {splitBillBooking && (
+        <SplitBillModal
+          booking={splitBillBooking}
+          isOpen={Boolean(splitBillBooking)}
+          onClose={() => setSplitBillBooking(null)}
+        />
+      )}
+
+      {walletBooking && (
+        <MobileWalletPassModal
+          booking={walletBooking}
+          isOpen={Boolean(walletBooking)}
+          onClose={() => setWalletBooking(null)}
+        />
       )}
     </div>
   );

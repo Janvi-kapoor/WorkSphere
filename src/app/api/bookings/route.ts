@@ -98,6 +98,44 @@ export async function POST(request: Request) {
 
     const { venueId, dates, time } = parsed.data;
 
+    const existingVenue = await prisma.venue.findUnique({
+      where: { id: venueId },
+      select: { id: true, maxCapacity: true },
+    });
+    if (!existingVenue) {
+      return NextResponse.json({ error: "Venue not found" }, { status: 404 });
+    }
+
+    // Guest count is optional and stays null when the caller does not send one.
+    // The bounds check lives here rather than in the Zod schema so the response
+    // can carry a message that names both limits instead of a generic field error.
+    let guestCount: number | undefined;
+    if (rawPayload.guestCount !== undefined && rawPayload.guestCount !== null) {
+      const requested = rawPayload.guestCount;
+
+      if (
+        typeof requested !== "number" ||
+        !Number.isInteger(requested) ||
+        requested < 1
+      ) {
+        return NextResponse.json(
+          { error: "Guest count must be between 1 and venue capacity" },
+          { status: 400 },
+        );
+      }
+
+      const venue = existingVenue;
+
+      if (requested > venue.maxCapacity) {
+        return NextResponse.json(
+          { error: "Guest count must be between 1 and venue capacity" },
+          { status: 400 },
+        );
+      }
+
+      guestCount = requested;
+    }
+
     // Create one booking record per date. For a single date this is a single row;
     // for recurring bookings it is one row per occurrence.
     const createdBookings = await prisma.$transaction(
@@ -111,6 +149,7 @@ export async function POST(request: Request) {
             customerEmail: user.primaryEmailAddress!.emailAddress,
             status: "CONFIRMED",
             confirmationId: generateConfirmationId(),
+            ...(guestCount !== undefined && { guestCount }),
           },
           include: { venue: true },
         }),

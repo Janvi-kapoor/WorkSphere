@@ -40,6 +40,8 @@ model User {
   smsAlertsEnabled   Boolean            @default(false)
   notificationStart  String?
   notificationEnd    String?
+  quietHoursStart    String?
+  quietHoursEnd      String?
   timezone           String?            @default("UTC")
   folderUpvotes      FolderUpvote[]
   sentFolderInvites  FolderInvite[]     @relation("FolderInviteSender")
@@ -57,9 +59,12 @@ model User {
   longestStreak      Int                @default(0)
   lastCheckInDate    String? // stored as "YYYY-MM-DD" UTC
   passkeys           PasskeyCredential[]
+  passkeyEmailOtps   PasskeyEmailOtp[]
   isVerifiedStudent  Boolean            @default(false)
   accurateVotes      Int                @default(0)
   badges             UserBadge[]
+  seatWaitlists      VenueSeatWaitlist[]
+  liveFeedbacks      VenueLiveFeedback[]
 }
 
 model UserBadge {
@@ -134,6 +139,7 @@ model Venue {
   sessions            CoworkingSession[]
   seats               VenueSeat[]
   wifiTelemetry       WifiTelemetry[]
+  telemetryRecords    TelemetryRecord[]
   validations         AmenityValidation[]
   foodValidations     FoodValidation[]
   folderVenues        FolderVenue[]
@@ -141,13 +147,46 @@ model Venue {
   maxCapacity         Int                 @default(50)
   checkIns            CheckIn[]
   xrAnchors           XRAnchor[]
+  noiseTelemetryReleases NoiseTelemetryRelease[]
   isClaimed           Boolean             @default(false)
   ownerId             String?
   hostMessage         String?
+  photos              VenuePhoto[]
   openingHours        String?
+  seatWaitlists       VenueSeatWaitlist[]
+  liveFeedbacks       VenueLiveFeedback[]
 
   @@index([latitude, longitude])
   @@index([category])
+}
+
+model VenueLiveFeedback {
+  id                String   @id @default(cuid())
+  venueId           String
+  venue             Venue    @relation(fields: [venueId], references: [id], onDelete: Cascade)
+  userId            String?
+  user              User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  vibe              String   // "silent_focus" | "moderate_buzz" | "lively"
+  noiseLevel        String?  // "quiet" | "moderate" | "loud"
+  isVerifiedCheckIn Boolean  @default(false)
+  createdAt         DateTime @default(now())
+  expiresAt         DateTime
+
+  @@index([venueId, expiresAt])
+  @@index([venueId, createdAt])
+  @@index([userId])
+}
+
+model VenuePhoto {
+  id        String   @id @default(cuid())
+  venueId   String
+  venue     Venue    @relation(fields: [venueId], references: [id], onDelete: Cascade)
+  url       String
+  blurhash  String?  @db.VarChar(32)
+  caption   String?
+  createdAt DateTime @default(now())
+
+  @@index([venueId])
 }
 
 model VenueRating {
@@ -190,6 +229,19 @@ model VenueRating {
   @@unique([userId, venueId])
   @@index([venueId])
   @@index([createdAt])
+}
+
+model NoiseTelemetryRelease {
+  venueId      String
+  venue        Venue    @relation(fields: [venueId], references: [id], onDelete: Cascade)
+  epochKey     String
+  avgDecibels  Float
+  rdpCosts     Json
+  submissions  Int      @default(1)
+  updatedAt    DateTime @updatedAt
+
+  @@id([venueId, epochKey])
+  @@index([epochKey])
 }
 
 model Favorite {
@@ -268,6 +320,7 @@ model Booking {
   guests             BookingGuest[]
   recurringGroupId   String?
   frequency          String?
+  guestCount         Int?
 
   @@index([userId])
   @@index([venueId])
@@ -308,7 +361,9 @@ enum GuestStatus {
 enum BookingStatus {
   CONFIRMED
   PENDING
+  CHECKED_IN
   CANCELLED
+  COMPLETED
 }
 
 model UserMemory {
@@ -444,6 +499,7 @@ model VenueSeat {
 
   bookings Booking[]
   xrAnchors XRAnchor[]
+  waitlistEntries VenueSeatWaitlist[]
 
   @@unique([venueId, seatNumber])
   @@index([venueId])
@@ -475,8 +531,9 @@ model XRAnchor {
   @@index([anchorPersistId])
 }
 
+/// Range-partitioned monthly on `timestamp` (#3362); PK must include the partition key.
 model WifiTelemetry {
-  id         String   @id @default(cuid())
+  id         String   @default(cuid())
   venueId    String
   venue      Venue    @relation(fields: [venueId], references: [id], onDelete: Cascade)
   download   Float
@@ -485,6 +542,26 @@ model WifiTelemetry {
   crowdLevel String
   timestamp  DateTime @default(now())
 
+  @@id([id, timestamp])
+  @@index([venueId])
+  @@index([timestamp])
+  @@index([venueId, timestamp])
+}
+
+model TelemetryRecord {
+  id         String   @default(cuid())
+  venueId    String
+  venue      Venue    @relation(fields: [venueId], references: [id], onDelete: Cascade)
+  download   Float?
+  upload     Float?
+  latency    Float?
+  noiseLevel Float?
+  occupancy  Int?
+  presence   Boolean? @default(true)
+  crowdLevel String?
+  timestamp  DateTime @default(now())
+
+  @@id([id, timestamp])
   @@index([venueId])
   @@index([timestamp])
   @@index([venueId, timestamp])
@@ -516,8 +593,9 @@ model FlaggedItem {
   @@index([itemId])
 }
 
+/// Range-partitioned monthly on `createdAt` (#3362); PK must include the partition key.
 model AdminAuditLog {
-  id         String   @id @default(cuid())
+  id         String   @default(cuid())
   adminId    String
   admin      User     @relation(fields: [adminId], references: [id], onDelete: Cascade)
   action     String
@@ -526,6 +604,7 @@ model AdminAuditLog {
   details    String?
   createdAt  DateTime @default(now())
 
+  @@id([id, createdAt])
   @@index([createdAt])
 }
 
@@ -712,6 +791,26 @@ model PasskeyCredential {
   @@index([userId])
 }
 
+/// Single-use email OTP gating sensitive passkey actions (#1991).
+/// Only an HMAC of the code is stored; rows are scoped to one action on one credential.
+model PasskeyEmailOtp {
+  id           String    @id @default(cuid())
+  userId       String
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// "rotate" | "rename" | "revoke"
+  action       String
+  /// PasskeyCredential.id the code authorises
+  credentialId String
+  codeHash     String
+  attempts     Int       @default(0)
+  expiresAt    DateTime
+  consumedAt   DateTime?
+  createdAt    DateTime  @default(now())
+
+  @@index([userId, action, credentialId])
+  @@index([expiresAt])
+}
+
 model PasskeyChallenge {
   id        String   @id @default(cuid())
   userId    String?
@@ -778,5 +877,65 @@ model FoodVote {
   createdAt DateTime @default(now())
 
   @@unique([userId, validationId])
+}
+
+model UniversityMerkleRoot {
+  id         String   @id @default(cuid())
+  university String
+  campus     String?
+  epoch      Int      @default(2026)
+  merkleRoot String   @unique
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([merkleRoot, isActive])
+  @@index([university, epoch])
+}
+
+model StudentPassNullifier {
+  id            String   @id @default(cuid())
+  nullifierHash String   @unique
+  epoch         Int      @default(2026)
+  claimedAt     DateTime @default(now())
+
+  @@index([nullifierHash])
+  @@index([epoch])
+}
+
+enum WaitlistStatus {
+  ACTIVE
+  NOTIFIED
+  CLAIMED
+  EXPIRED
+  CANCELLED
+}
+
+model VenueSeatWaitlist {
+  id              String         @id @default(cuid())
+  userId          String
+  user            User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  venueId         String
+  venue           Venue          @relation(fields: [venueId], references: [id], onDelete: Cascade)
+  seatId          String?
+  seat            VenueSeat?     @relation(fields: [seatId], references: [id], onDelete: SetNull)
+  seatType        SeatType?
+  date            String         // YYYY-MM-DD
+  time            String         // HH:MM
+  duration        Int            @default(60) // in minutes
+  timeZone        String?        @default("UTC")
+  requiresQuiet   Boolean        @default(false)
+  requiresOutlets Boolean        @default(false)
+  status          WaitlistStatus @default(ACTIVE)
+  notifiedAt      DateTime?
+  claimExpiresAt  DateTime?
+  claimedAt       DateTime?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  @@index([venueId, date, status])
+  @@index([userId, status])
+  @@index([seatId])
+  @@index([status, claimExpiresAt])
 }
 

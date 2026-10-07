@@ -6,11 +6,18 @@ import { ChevronRight, UserCircle, Webhook } from "lucide-react";
 import { UserPreferenceToggle } from "@/components/UserPreferenceToggle";
 import { AccentPicker } from "@/components/AccentPicker";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { HighContrastToggle } from "@/components/HighContrastToggle";
 import { PasskeyManager } from "@/components/auth/PasskeyManager";
 import { TelegramStatusBanner } from "@/components/dashboard/TelegramStatusBanner";
 import { WorkStyleProfile } from "@/app/dashboard/WorkStyleProfile";
 import { NotificationSettings } from "@/app/dashboard/NotificationSettings";
 import { MemoryManager } from "@/app/dashboard/MemoryManager";
+import { DistanceUnitToggle } from "@/components/settings/DistanceUnitToggle";
+import { ChatSoundToggle } from "@/components/settings/ChatSoundToggle";
+import { ChatTimestampFormatToggle } from "@/components/settings/ChatTimestampFormatToggle";
+import { TimezoneBadge } from "@/components/TimezoneBadge";
+
+import { VisitedVenuesCard } from "@/components/profile/VisitedVenuesCard";
 
 const PERSONALIZATION_KEY = "ai_personalization_enabled";
 
@@ -101,6 +108,7 @@ export default function SettingsPage() {
             title="Account"
             description="Your name, email addresses, password and connected sign-in methods."
           >
+            <VisitedVenuesCard />
             <Link
               href="/user-profile"
               className="flex items-center justify-between gap-3 p-4 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 hover:border-zinc-300 dark:hover:border-zinc-700 transition-colors"
@@ -119,6 +127,9 @@ export default function SettingsPage() {
             description="Tell WorkSphere how you like to work so results fit you better."
           >
             <WorkStyleProfile />
+            <DistanceUnitToggle />
+            <ChatSoundToggle />
+            <ChatTimestampFormatToggle />
             <UserPreferenceToggle
               enabled={personalizationEnabled}
               onToggle={handleToggle}
@@ -131,6 +142,7 @@ export default function SettingsPage() {
             title="Notifications"
             description="Reminders before bookings and sessions, and quiet hours."
           >
+            <TimezoneBadge />
             <NotificationSettings />
           </Section>
 
@@ -171,17 +183,20 @@ export default function SettingsPage() {
           <Section
             id="appearance"
             title="Appearance"
-            description="Theme and accent colour."
+            description="Theme, accent colour, and contrast preferences."
           >
-            <div className="flex flex-wrap items-center gap-6 p-4 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900">
-              <div className="flex items-center gap-3">
-                <span className="text-sm font-medium">Theme</span>
-                <ThemeToggle />
+            <div className="space-y-4">
+              <div className="flex flex-wrap items-center gap-6 p-4 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900">
+                <div className="flex items-center gap-3">
+                  <span className="text-sm font-medium">Theme</span>
+                  <ThemeToggle />
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="text-sm font-medium">Accent</span>
+                  <AccentPicker />
+                </div>
               </div>
-              <div className="flex items-center gap-3">
-                <span className="text-sm font-medium">Accent</span>
-                <AccentPicker />
-              </div>
+              <HighContrastToggle />
             </div>
           </Section>
         </div>

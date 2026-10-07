@@ -52,11 +52,12 @@ export function parseStructuredHours(hoursStr: string | null | undefined): Struc
  * Formats a time string like "09:00" into 12-hour format "9:00 AM"
  */
 export function formatTime12h(time24: string): string {
-  const parts = time24.split(":");
+  if (!time24 || typeof time24 !== "string") return "";
+  const parts = time24.trim().split(":");
   if (parts.length < 2) return time24;
   const h = Number(parts[0]);
   const m = Number(parts[1]);
-  if (isNaN(h) || isNaN(m)) return time24;
+  if (isNaN(h) || isNaN(m) || h < 0 || h > 23 || m < 0 || m > 59) return time24;
   const ampm = h >= 12 ? "PM" : "AM";
   const displayH = h % 12 || 12;
   const displayM = String(m).padStart(2, "0");
@@ -66,7 +67,11 @@ export function formatTime12h(time24: string): string {
 /**
  * Returns whether the venue is currently open, along with a human-readable display string
  */
-export function getOpeningHoursStatus(hoursStr: string | null | undefined, timezoneOverride?: string): {
+export function getOpeningHoursStatus(
+  hoursStr: string | null | undefined,
+  timezoneOverride?: string,
+  nowInput?: Date,
+): {
   isOpen: boolean;
   displayString: string;
   isStructured: boolean;
@@ -81,7 +86,7 @@ export function getOpeningHoursStatus(hoursStr: string | null | undefined, timez
   }
 
   const timezone = timezoneOverride || structured.timezone;
-  const now = new Date();
+  const now = nowInput || new Date();
 
   try {
     const formatter = new Intl.DateTimeFormat("en-US", {
@@ -94,31 +99,53 @@ export function getOpeningHoursStatus(hoursStr: string | null | undefined, timez
     const parts = formatter.formatToParts(now);
     const partMap = Object.fromEntries(parts.map((p) => [p.type, p.value]));
 
-    const dayName = partMap.weekday.toLowerCase();
-    const currentMinutes = Number(partMap.hour === "24" ? 0 : partMap.hour) * 60 + Number(partMap.minute);
+    const dayName = partMap.weekday ? partMap.weekday.toLowerCase() : "";
+    const currentMinutes = Number(partMap.hour === "24" ? 0 : partMap.hour || 0) * 60 + Number(partMap.minute || 0);
 
-    const period = structured.periods[dayName];
-    if (!period || period.closed) {
-      return {
-        isOpen: false,
-        displayString: `Closed Today (${timezone})`,
-        isStructured: true,
-      };
-    }
-
-    const [openH, openM] = period.open.split(":").map(Number);
-    const [closeH, closeM] = period.close.split(":").map(Number);
-    const openMin = openH * 60 + openM;
-    const closeMin = closeH * 60 + closeM;
+    const period = structured.periods ? structured.periods[dayName] : undefined;
+    const dayIdx = DAYS_OF_WEEK.indexOf(dayName);
 
     let isOpen = false;
-    if (closeMin < openMin) {
-      isOpen = currentMinutes >= openMin || currentMinutes <= closeMin;
-    } else {
-      isOpen = currentMinutes >= openMin && currentMinutes < closeMin;
+    let overnightFromPrev = false;
+
+    if (dayIdx !== -1 && structured.periods) {
+      const prevName = DAYS_OF_WEEK[(dayIdx + 6) % 7];
+      const prev = structured.periods[prevName];
+      if (prev && !prev.closed && typeof prev.open === "string" && typeof prev.close === "string") {
+        const [pOpenH, pOpenM] = prev.open.split(":").map(Number);
+        const [pCloseH, pCloseM] = prev.close.split(":").map(Number);
+        const pOpenMin = pOpenH * 60 + pOpenM;
+        const pCloseMin = pCloseH * 60 + pCloseM;
+        if (pCloseMin < pOpenMin && currentMinutes < pCloseMin) {
+          isOpen = true;
+          overnightFromPrev = true;
+        }
+      }
     }
 
-    const displayString = `Today: ${formatTime12h(period.open)} - ${formatTime12h(period.close)} (${timezone})`;
+    if (!isOpen && period && !period.closed && typeof period.open === "string" && typeof period.close === "string") {
+      const [openH, openM] = period.open.split(":").map(Number);
+      const [closeH, closeM] = period.close.split(":").map(Number);
+      const openMin = openH * 60 + openM;
+      const closeMin = closeH * 60 + closeM;
+
+      if (closeMin < openMin) {
+        isOpen = currentMinutes >= openMin || currentMinutes < closeMin;
+      } else {
+        isOpen = currentMinutes >= openMin && currentMinutes < closeMin;
+      }
+    }
+
+    let displayString: string;
+    if (period && !period.closed && typeof period.open === "string" && typeof period.close === "string") {
+      displayString = `Today: ${formatTime12h(period.open)} - ${formatTime12h(period.close)} (${timezone})`;
+    } else if (overnightFromPrev && dayIdx !== -1 && structured.periods) {
+      const prevName = DAYS_OF_WEEK[(dayIdx + 6) % 7];
+      const prev = structured.periods[prevName];
+      displayString = prev?.close ? `Open until ${formatTime12h(prev.close)} (${timezone})` : `Closed Today (${timezone})`;
+    } else {
+      displayString = `Closed Today (${timezone})`;
+    }
 
     return { isOpen, displayString, isStructured: true };
   } catch (error) {

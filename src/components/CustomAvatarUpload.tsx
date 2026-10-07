@@ -12,6 +12,7 @@ import Image from "next/image";
 import { normalizeImageOrientation } from "@/lib/exifOrientation";
 import { AvatarCropModal } from "@/components/AvatarCropModal";
 import { dispatchAvatarUpdated } from "@/lib/avatar-events";
+import { MemberSinceBadge } from "@/components/MemberSinceBadge";
 
 const MAX_SOURCE_FILE_SIZE = 5 * 1024 * 1024;
 const HEIC_EXTENSIONS = [".heic", ".heif"];
@@ -48,7 +49,8 @@ function getImageDimensions(
 ): Promise<{ width: number; height: number }> {
   return new Promise((resolve, reject) => {
     const img = new window.Image();
-    img.onload = () => resolve({ width: img.naturalWidth, height: img.naturalHeight });
+    img.onload = () =>
+      resolve({ width: img.naturalWidth, height: img.naturalHeight });
     img.onerror = () => reject(new Error("Failed to read image dimensions."));
     img.src = src;
   });
@@ -105,6 +107,12 @@ export function CustomAvatarUpload() {
       return;
     }
 
+    setPreviewUrl((currentPreview) => {
+      if (currentPreview) {
+        revokeSafeObjectURL(currentPreview);
+      }
+      return null;
+    });
     setCropSource((currentSource) => {
       if (currentSource) {
         revokeSafeObjectURL(currentSource);
@@ -112,6 +120,23 @@ export function CustomAvatarUpload() {
       return null;
     });
     setSelectedFileName("");
+  };
+
+  const handleRemovePreview = () => {
+    setPreviewUrl((currentPreview) => {
+      if (currentPreview) {
+        revokeSafeObjectURL(currentPreview);
+      }
+      return null;
+    });
+    setCropSource((currentSource) => {
+      if (currentSource) {
+        revokeSafeObjectURL(currentSource);
+      }
+      return null;
+    });
+    setSelectedFileName("");
+    clearInput();
   };
 
   const handleFileChange = async (
@@ -168,6 +193,14 @@ export function CustomAvatarUpload() {
         clearInput();
         return;
       }
+
+      setPreviewUrl((currentPreview) => {
+        if (currentPreview) {
+          revokeSafeObjectURL(currentPreview);
+        }
+
+        return source;
+      });
 
       setCropSource((currentSource) => {
         if (currentSource) {
@@ -280,6 +313,7 @@ export function CustomAvatarUpload() {
             <h3 className="text-lg font-semibold text-zinc-900 dark:text-white mb-1">
               Profile Picture
             </h3>
+            <MemberSinceBadge createdAt={user?.createdAt} className="mb-2" />
             <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-4">
               Upload a custom avatar to personalize your profile. (Max 5MB)
             </p>
@@ -294,23 +328,45 @@ export function CustomAvatarUpload() {
                 onChange={handleFileChange}
                 disabled={isUploading || isPreparing}
               />
-              <button
-                onClick={() => fileInputRef.current?.click()}
-                disabled={isUploading || isPreparing}
-                className="inline-flex items-center gap-2 px-4 py-2 bg-zinc-900 dark:bg-white text-white dark:text-zinc-900 text-sm font-medium rounded-lg hover:bg-zinc-800 dark:hover:bg-zinc-100 disabled:opacity-50 transition-colors"
-              >
-                {isUploading || isPreparing ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    Uploading...
-                  </>
-                ) : (
-                  <>
-                    <Upload className="w-4 h-4" />
-                    Upload Image
-                  </>
-                )}
-              </button>
+              {previewUrl ? (
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={isUploading || isPreparing}
+                    className="inline-flex items-center gap-2 px-4 py-2 bg-zinc-900 dark:bg-white text-white dark:text-zinc-900 text-sm font-medium rounded-lg hover:bg-zinc-800 dark:hover:bg-zinc-100 disabled:opacity-50 transition-colors"
+                  >
+                    Change
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleRemovePreview}
+                    disabled={isUploading || isPreparing}
+                    className="inline-flex items-center gap-2 px-4 py-2 border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-800 text-sm font-medium rounded-lg disabled:opacity-50 transition-colors"
+                  >
+                    Remove
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={isUploading || isPreparing}
+                  className="inline-flex items-center gap-2 px-4 py-2 bg-zinc-900 dark:bg-white text-white dark:text-zinc-900 text-sm font-medium rounded-lg hover:bg-zinc-800 dark:hover:bg-zinc-100 disabled:opacity-50 transition-colors"
+                >
+                  {isUploading || isPreparing ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      Uploading...
+                    </>
+                  ) : (
+                    <>
+                      <Upload className="w-4 h-4" />
+                      Upload Image
+                    </>
+                  )}
+                </button>
+              )}
               {error && <span className="text-sm text-red-500">{error}</span>}
               {success && (
                 <p

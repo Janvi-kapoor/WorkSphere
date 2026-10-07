@@ -1,0 +1,396 @@
+"use client";
+
+import React, { useEffect, useRef, useState, useCallback } from "react";
+import * as THREE from "three";
+import { useWebXR } from "@/hooks/useWebXR";
+import { useDeviceOrientation } from "@/hooks/useDeviceOrientation";
+import { normalizeAngle } from "@/lib/geometry/bearing";
+import {
+  calculate3DDistance,
+  applyDistanceSmoothing,
+  formatElevationIndicator,
+  Vector3,
+} from "@/types/ar";
+import CompassFallback from "./CompassFallback";
+import { Eye, Layers, Navigation, Compass, Disc3 } from "lucide-react";
+import { drawRadarOverlay } from "@/lib/ar/radarCanvas";
+
+export interface SeatARPointerProps {
+  /** Target reserved seat information */
+  seatNumber?: string;
+  seatId?: string;
+  venueName?: string;
+  /** Floor level (e.g., 2 for Floor 2) */
+  floorLevel?: number;
+  /** Smoothing factor alpha for low-pass distance filter (0.01 to 1.0, default 0.2) */
+  smoothingAlpha?: number;
+  /** Spatial target anchor coordinates in local AR metric space */
+  targetAnchor?: Vector3;
+  /** Spatial user camera initial position */
+  userAnchor?: Vector3;
+  /** Target seat GPS coordinates (if outdoors/large campus) */
+  targetGps?: {
+    latitude: number;
+    longitude: number;
+  };
+  onClose?: () => void;
+}
+
+/**
+ * SeatARPointer (#3956, #4413):
+ * For supported mobile devices with WebXR camera access, projects a floating
+ * 3D directional arrow pointing towards the user's reserved seat anchor in AR space.
+ * Calculates 3D Euclidean distance, low-pass smoothed metrics, and floor elevation indicators.
+ * Gracefully falls back to CompassFallback if WebXR is unsupported or denied.
+ */
+export function SeatARPointer({
+  seatNumber = "1A",
+  seatId: _seatId,
+  venueName = "WorkSphere Venue",
+  floorLevel,
+  smoothingAlpha = 0.2,
+  targetAnchor = { x: 0, y: 0.8, z: -3 }, // default 3 meters ahead
+  userAnchor = { x: 0, y: 1.2, z: 0 },
+  targetGps,
+  onClose,
+}: SeatARPointerProps) {
+  const { isSupported, requestSession } = useWebXR();
+  const { heading } = useDeviceOrientation();
+
+  const containerRef = useRef<HTMLDivElement>(null);
+  const radarCanvasRef = useRef<HTMLCanvasElement>(null);
+  const [_xrSession, setXrSession] = useState<XRSession | null>(null);
+  const [sessionActive, setSessionActive] = useState(false);
+  const [showRadar, setShowRadar] = useState(true);
+  const [distanceToSeat, setDistanceToSeat] = useState<number>(3.0);
+  const [elevationDelta, setElevationDelta] = useState<number>(0);
+  const [elevationText, setElevationText] = useState<string>("Same Level (+0.0m)");
+  const [bearingAngle, setBearingAngle] = useState<number>(0);
+
+  const prevDistanceRef = useRef<number | null>(null);
+
+  // Fallback to CompassFallback if WebXR is explicitly unsupported
+  const isWebXRUnavailable = isSupported === false;
+
+  // Initialize WebXR or Device Orientation projection
+  const startARSession = useCallback(async () => {
+    try {
+      const session = await requestSession("immersive-ar", {
+        requiredFeatures: ["local-floor"],
+        optionalFeatures: ["hit-test", "anchors", "dom-overlay"],
+      });
+      if (session) {
+        setXrSession(session);
+        setSessionActive(true);
+      }
+    } catch (err) {
+      console.warn(
+        "[SeatARPointer] WebXR session request rejected or unsupported:",
+        err,
+      );
+      // Let user use camera or compass fallback
+    }
+  }, [requestSession]);
+
+  // Set up Three.js 3D Arrow scene
+  useEffect(() => {
+    if (!containerRef.current) return;
+
+    const container = containerRef.current;
+    const width = container.clientWidth || window.innerWidth;
+    const height = container.clientHeight || window.innerHeight;
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(70, width / height, 0.01, 20);
+    camera.position.set(0, 1.2, 0); // user eye level
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setSize(width, height);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.xr.enabled = true;
+    container.appendChild(renderer.domElement);
+
+    // Ambient & directional lighting
+    const ambientLight = new THREE.AmbientLight(0xffffff, 1.2);
+    scene.add(ambientLight);
+    const dirLight = new THREE.DirectionalLight(0x3b82f6, 1.5);
+    dirLight.position.set(0, 5, 2);
+    scene.add(dirLight);
+
+    // Create 3D Arrow Mesh pointing towards seat anchor
+    const arrowGroup = new THREE.Group();
+
+    // Arrow Cone Tip
+    const coneGeometry = new THREE.ConeGeometry(0.12, 0.35, 32);
+    const arrowMaterial = new THREE.MeshStandardMaterial({
+      color: 0x3b82f6,
+      emissive: 0x1d4ed8,
+      emissiveIntensity: 0.4,
+      metalness: 0.3,
+      roughness: 0.2,
+    });
+    const cone = new THREE.Mesh(coneGeometry, arrowMaterial);
+    cone.position.set(0, 0.4, 0);
+
+    // Arrow Shaft Cylinder
+    const shaftGeometry = new THREE.CylinderGeometry(0.04, 0.04, 0.35, 16);
+    const shaft = new THREE.Mesh(shaftGeometry, arrowMaterial);
+    shaft.position.set(0, 0.15, 0);
+
+    // Pulsing target locator ring on floor
+    const ringGeometry = new THREE.RingGeometry(0.2, 0.25, 32);
+    const ringMaterial = new THREE.MeshBasicMaterial({
+      color: 0x60a5fa,
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: 0.8,
+    });
+    const ring = new THREE.Mesh(ringGeometry, ringMaterial);
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.set(0, 0, 0);
+
+    arrowGroup.add(cone);
+    arrowGroup.add(shaft);
+    arrowGroup.add(ring);
+    scene.add(arrowGroup);
+
+    // Floating Target Seat Anchor Marker
+    const targetVector = new THREE.Vector3(
+      targetAnchor.x,
+      targetAnchor.y,
+      targetAnchor.z,
+    );
+
+    let animationFrameId: number;
+    const clock = new THREE.Clock();
+
+    const animate = () => {
+      const elapsedTime = clock.getElapsedTime();
+
+      // Floating bobbing effect
+      arrowGroup.position.y = 1.0 + Math.sin(elapsedTime * 2.5) * 0.08;
+
+      // Compute heading transform matrix & 3D Euclidean distance towards seat anchor
+      const currentCameraPos = camera.position;
+      const userPosVec: Vector3 = {
+        x: currentCameraPos.x,
+        y: currentCameraPos.y,
+        z: currentCameraPos.z,
+      };
+      const targetPosVec: Vector3 = {
+        x: targetVector.x,
+        y: targetVector.y,
+        z: targetVector.z,
+      };
+
+      const metrics = calculate3DDistance(userPosVec, targetPosVec);
+      const smoothed = applyDistanceSmoothing(
+        metrics.distance3D,
+        prevDistanceRef.current,
+        smoothingAlpha
+      );
+      prevDistanceRef.current = smoothed;
+
+      setDistanceToSeat(smoothed);
+      setElevationDelta(Math.round(metrics.elevationDelta * 10) / 10);
+      setElevationText(formatElevationIndicator(metrics.elevationDelta, floorLevel));
+
+      const dirToTarget = new THREE.Vector3().subVectors(
+        targetVector,
+        currentCameraPos,
+      );
+
+      // Compute normalized bearing angle
+      const rad = Math.atan2(dirToTarget.x, -dirToTarget.z);
+      const deg = normalizeAngle((rad * 180) / Math.PI);
+      setBearingAngle(Math.round(deg));
+
+      // Orient arrow towards target anchor
+      arrowGroup.position.set(0, 0.8, -1.2); // projected 1.2m directly in front of camera view
+      arrowGroup.lookAt(targetVector.x, arrowGroup.position.y, targetVector.z);
+      // Pitch down slightly to guide user eyes towards floor
+      arrowGroup.rotateX(Math.PI / 6);
+
+      // Pulse ring opacity and scale
+      const pulse = 1 + Math.sin(elapsedTime * 4) * 0.15;
+      ring.scale.set(pulse, pulse, pulse);
+
+      renderer.render(scene, camera);
+      animationFrameId = requestAnimationFrame(animate);
+    };
+
+    animationFrameId = requestAnimationFrame(animate);
+
+    const handleResize = () => {
+      const w = container.clientWidth;
+      const h = container.clientHeight;
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+      renderer.setSize(w, h);
+    };
+
+    window.addEventListener("resize", handleResize);
+
+    return () => {
+      window.removeEventListener("resize", handleResize);
+      cancelAnimationFrame(animationFrameId);
+      if (renderer.domElement && container.contains(renderer.domElement)) {
+        container.removeChild(renderer.domElement);
+      }
+      renderer.dispose();
+      coneGeometry.dispose();
+      shaftGeometry.dispose();
+      ringGeometry.dispose();
+      arrowMaterial.dispose();
+      ringMaterial.dispose();
+    };
+  }, [targetAnchor, floorLevel, smoothingAlpha]);
+
+  // Synchronous 2D Radar Canvas drawing loop
+  useEffect(() => {
+    if (!showRadar) return;
+    const canvas = radarCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    let animId: number;
+    const renderRadar = () => {
+      drawRadarOverlay(ctx, {
+        size: 130,
+        maxRangeMeters: 10,
+        heading: heading ?? 0,
+        bearingAngle,
+        distance: distanceToSeat,
+        pulseTime: Date.now() / 1000,
+        seatLabel: seatNumber,
+      });
+      animId = requestAnimationFrame(renderRadar);
+    };
+
+    animId = requestAnimationFrame(renderRadar);
+
+    return () => {
+      cancelAnimationFrame(animId);
+    };
+  }, [showRadar, heading, bearingAngle, distanceToSeat, seatNumber]);
+
+  if (isWebXRUnavailable) {
+    return (
+      <div className="relative w-full h-full flex flex-col items-center justify-center p-4">
+        <CompassFallback
+          destinationLat={targetGps?.latitude}
+          destinationLng={targetGps?.longitude}
+          destinationName={`Seat ${seatNumber} at ${venueName}`}
+          onRetryAR={startARSession}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="relative w-full h-full min-h-[500px] overflow-hidden rounded-2xl bg-slate-950">
+      {/* 3D WebXR Camera View Canvas Container */}
+      <div ref={containerRef} className="absolute inset-0 w-full h-full" />
+
+      {/* AR Floating Distance & Elevation HUD Overlay */}
+      <div className="absolute top-4 left-4 right-4 z-20 flex items-center justify-between pointer-events-none">
+        <div className="bg-slate-900/85 backdrop-blur-md border border-slate-700/70 p-3 rounded-xl text-white shadow-xl pointer-events-auto flex flex-col gap-1.5 min-w-[220px]">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping" />
+              <span className="text-xs font-bold text-slate-100">
+                Seat {seatNumber}
+              </span>
+            </div>
+            <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-blue-500/20 text-blue-300 border border-blue-500/30">
+              {bearingAngle}°
+            </span>
+          </div>
+
+          <div className="flex items-center justify-between gap-2 text-xs font-semibold text-blue-400 border-t border-slate-800 pt-1.5">
+            <div className="flex items-center gap-1.5">
+              <Navigation className="w-3.5 h-3.5 text-blue-400" />
+              <span>{distanceToSeat.toFixed(1)}m away</span>
+            </div>
+            <div className="flex items-center gap-1 text-[11px] text-emerald-400 font-mono">
+              <Layers className="w-3 h-3 text-emerald-400" />
+              <span>{elevationText}</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 pointer-events-auto">
+          {/* Radar Overlay Toggle Button */}
+          <button
+            type="button"
+            onClick={() => setShowRadar((prev) => !prev)}
+            title={showRadar ? "Hide 2D Radar" : "Show 2D Radar"}
+            aria-label={showRadar ? "Hide 2D Radar" : "Show 2D Radar"}
+            aria-pressed={showRadar}
+            data-testid="toggle-radar-btn"
+            className={`p-2 rounded-xl backdrop-blur-md border transition flex items-center gap-1.5 text-xs font-medium ${
+              showRadar
+                ? "bg-blue-600/80 border-blue-500 text-white shadow-lg shadow-blue-500/20"
+                : "bg-slate-900/80 border-slate-700 text-slate-300 hover:text-white"
+            }`}
+          >
+            <Compass className="w-4 h-4" />
+            <span className="hidden sm:inline">Radar</span>
+          </button>
+
+          {onClose && (
+            <button
+              onClick={onClose}
+              className="p-2 rounded-xl bg-slate-900/80 backdrop-blur-md border border-slate-700 text-slate-300 hover:text-white transition"
+            >
+              ✕
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Mini 2D Radar Overlay in Bottom Corner */}
+      {showRadar && (
+        <div
+          data-testid="radar-overlay-container"
+          className="absolute bottom-16 right-4 z-20 pointer-events-auto flex flex-col items-end gap-1.5 animate-in fade-in zoom-in-95 duration-200"
+        >
+          <div className="relative rounded-full p-1 bg-slate-950/80 backdrop-blur-md border border-sky-500/30 shadow-2xl shadow-sky-950/50">
+            <canvas
+              ref={radarCanvasRef}
+              width={130}
+              height={130}
+              className="block rounded-full"
+              data-testid="radar-canvas"
+              aria-label="2D Radar mini-map showing seat position"
+            />
+            {/* Compass Azimuth indicator badge on radar */}
+            <div className="absolute -top-1.5 left-1/2 -translate-x-1/2 px-1.5 py-0.5 rounded-full bg-slate-900/90 border border-sky-400/30 text-[9px] font-mono text-sky-300 shadow">
+              {Math.round(heading ?? 0)}°
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Controls Footer */}
+      <div className="absolute bottom-6 inset-x-4 z-20 flex flex-col items-center gap-3 pointer-events-none">
+        {!sessionActive && isSupported && (
+          <button
+            onClick={startARSession}
+            className="pointer-events-auto inline-flex items-center gap-2 px-5 py-2.5 rounded-xl font-bold text-sm bg-blue-600 hover:bg-blue-500 text-white shadow-xl transition"
+          >
+            <Eye className="w-4 h-4" />
+            Launch Immersive AR Camera
+          </button>
+        )}
+
+        <div className="px-3.5 py-1.5 rounded-lg bg-slate-900/90 backdrop-blur-md border border-slate-800 text-[11px] text-slate-300">
+          Point phone camera around room to locate your reserved seat
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default SeatARPointer;

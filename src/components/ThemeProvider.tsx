@@ -14,6 +14,7 @@ import {
   ACCENT_HEX_MAP,
   ACCENT_STORAGE_KEY,
   DEFAULT_ACCENT,
+  HIGH_CONTRAST_STORAGE_KEY,
   parseAccentColor,
 } from "@/lib/constants/theme";
 
@@ -26,6 +27,9 @@ export interface ThemeContextValue {
   accent: AccentColor;
   accentHex: string;
   setAccent: (accent: AccentColor) => void;
+  highContrast: boolean;
+  setHighContrast: (enabled: boolean) => void;
+  toggleHighContrast: () => void;
 }
 
 const ThemeContext = createContext<ThemeContextValue | undefined>(undefined);
@@ -36,6 +40,7 @@ function applyTheme(theme: Theme) {
   if (typeof document === "undefined") return;
   const root = document.documentElement;
 
+  root.setAttribute("data-theme", theme);
   root.classList.remove("dark", "cyberpunk");
 
   if (theme === "dark") {
@@ -44,7 +49,26 @@ function applyTheme(theme: Theme) {
     root.classList.add("cyberpunk");
   }
 
+  const bg = theme === "dark" ? "#0a0a0a" : theme === "cyberpunk" ? "#090014" : "#ffffff";
+  const fg = theme === "dark" ? "#ededed" : theme === "cyberpunk" ? "#f4f4ff" : "#171717";
+
   root.style.colorScheme = theme === "light" ? "light" : "dark";
+  root.style.backgroundColor = bg;
+  root.style.color = fg;
+  root.style.setProperty("--background", bg);
+  root.style.setProperty("--foreground", fg);
+}
+
+function applyHighContrast(enabled: boolean) {
+  if (typeof document === "undefined") return;
+  const root = document.documentElement;
+  if (enabled) {
+    root.classList.add("high-contrast");
+    root.setAttribute("data-high-contrast", "true");
+  } else {
+    root.classList.remove("high-contrast");
+    root.removeAttribute("data-high-contrast");
+  }
 }
 
 function applyAccent(accent: AccentColor) {
@@ -65,16 +89,27 @@ interface ThemeProviderProps {
   children: ReactNode;
   initialTheme?: Theme;
   initialAccent?: AccentColor;
+  initialHighContrast?: boolean;
 }
 
 export function ThemeProvider({
   children,
   initialTheme = "light",
   initialAccent = DEFAULT_ACCENT,
+  initialHighContrast = false,
 }: ThemeProviderProps) {
   const [theme, setThemeState] = useState<Theme>(() => {
     if (typeof document === "undefined") return initialTheme;
     const root = document.documentElement;
+    // Keep hydration aligned with the theme already applied before first paint.
+    const rootTheme = root.getAttribute("data-theme");
+    if (
+      rootTheme === "dark" ||
+      rootTheme === "cyberpunk" ||
+      rootTheme === "light"
+    ) {
+      return rootTheme;
+    }
     if (root.classList.contains("cyberpunk")) return "cyberpunk";
     if (root.classList.contains("dark")) return "dark";
     const saved = window.localStorage.getItem(STORAGE_KEY) as Theme | null;
@@ -89,6 +124,15 @@ export function ThemeProvider({
     return parseAccentColor(saved);
   });
 
+  const [highContrast, setHighContrastState] = useState<boolean>(() => {
+    if (typeof document === "undefined") return initialHighContrast;
+    const root = document.documentElement;
+    if (root.classList.contains("high-contrast") || root.getAttribute("data-high-contrast") === "true") return true;
+    const saved = window.localStorage.getItem(HIGH_CONTRAST_STORAGE_KEY);
+    if (saved !== null) return saved === "true";
+    return initialHighContrast;
+  });
+
   const accentHex = useMemo(
     () => ACCENT_HEX_MAP[accent] || ACCENT_HEX_MAP[DEFAULT_ACCENT],
     [accent],
@@ -101,6 +145,10 @@ export function ThemeProvider({
   useEffect(() => {
     applyAccent(accent);
   }, [accent]);
+
+  useEffect(() => {
+    applyHighContrast(highContrast);
+  }, [highContrast]);
 
   const setTheme = useCallback((next: Theme) => {
     setThemeState(next);
@@ -129,6 +177,29 @@ export function ThemeProvider({
     applyAccent(next);
   }, []);
 
+  const setHighContrast = useCallback((next: boolean) => {
+    setHighContrastState(next);
+    window.localStorage.setItem(HIGH_CONTRAST_STORAGE_KEY, String(next));
+    document.cookie = `${HIGH_CONTRAST_STORAGE_KEY}=${next}; path=/; max-age=31536000; SameSite=Lax`;
+    applyHighContrast(next);
+    window.dispatchEvent(
+      new CustomEvent("worksphere_high_contrast_change", { detail: next })
+    );
+  }, []);
+
+  const toggleHighContrast = useCallback(() => {
+    setHighContrastState((prev) => {
+      const next = !prev;
+      window.localStorage.setItem(HIGH_CONTRAST_STORAGE_KEY, String(next));
+      document.cookie = `${HIGH_CONTRAST_STORAGE_KEY}=${next}; path=/; max-age=31536000; SameSite=Lax`;
+      applyHighContrast(next);
+      window.dispatchEvent(
+        new CustomEvent("worksphere_high_contrast_change", { detail: next })
+      );
+      return next;
+    });
+  }, []);
+
   useEffect(() => {
     const onStorage = (e: StorageEvent) => {
       if (
@@ -145,14 +216,55 @@ export function ThemeProvider({
         setAccentState(parsedAccent);
         applyAccent(parsedAccent);
       }
+      if (e.key === HIGH_CONTRAST_STORAGE_KEY) {
+        const next = e.newValue === "true";
+        setHighContrastState(next);
+        applyHighContrast(next);
+      }
     };
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
   }, []);
 
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const isHighContrastShortcut =
+        ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "H" || e.key === "h")) ||
+        (e.altKey && e.shiftKey && (e.key === "H" || e.key === "h"));
+
+      if (isHighContrastShortcut) {
+        e.preventDefault();
+        toggleHighContrast();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [toggleHighContrast]);
+
   const value = useMemo<ThemeContextValue>(
-    () => ({ theme, setTheme, toggleTheme, accent, accentHex, setAccent }),
-    [theme, setTheme, toggleTheme, accent, accentHex, setAccent],
+    () => ({
+      theme,
+      setTheme,
+      toggleTheme,
+      accent,
+      accentHex,
+      setAccent,
+      highContrast,
+      setHighContrast,
+      toggleHighContrast,
+    }),
+    [
+      theme,
+      setTheme,
+      toggleTheme,
+      accent,
+      accentHex,
+      setAccent,
+      highContrast,
+      setHighContrast,
+      toggleHighContrast,
+    ],
   );
 
   return (
@@ -170,6 +282,9 @@ export function useTheme() {
       accent: DEFAULT_ACCENT,
       accentHex: ACCENT_HEX_MAP[DEFAULT_ACCENT],
       setAccent: () => {},
+      highContrast: false,
+      setHighContrast: () => {},
+      toggleHighContrast: () => {},
     };
   }
   return ctx;

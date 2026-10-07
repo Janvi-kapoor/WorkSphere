@@ -8,13 +8,21 @@ import {
   createContext,
   useContext,
 } from "react";
-import { X, CheckCircle2, AlertCircle, AlertTriangle } from "lucide-react";
+import { X, CheckCircle2, AlertCircle, AlertTriangle, Info } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-type ToastType = "success" | "error" | "warning";
+export type ToastType = "success" | "error" | "warning" | "info";
 
-interface Toast {
+export interface ToastOptions {
+  id?: string;
+  key?: string;
+  countdown?: number;
+  action?: { label: string; onClick: () => void };
+}
+
+export interface Toast {
   id: string;
+  key?: string;
   message: string;
   type: ToastType;
   action?: {
@@ -22,14 +30,16 @@ interface Toast {
     onClick: () => void;
   };
   countdown?: number;
+  updatedAt?: number;
 }
 
-interface ToastContextValue {
+export interface ToastContextValue {
   toast: (
     message: string,
     type?: ToastType,
-    action?: { label: string; onClick: () => void },
+    actionOrOptions?: { label: string; onClick: () => void } | ToastOptions,
     countdown?: number,
+    idOrKey?: string,
   ) => void;
 }
 
@@ -53,21 +63,87 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     (
       message: string,
       type: ToastType = "success",
-      action?: { label: string; onClick: () => void },
+      actionOrOptions?: { label: string; onClick: () => void } | ToastOptions,
       countdown?: number,
+      idOrKey?: string,
     ) => {
+      let action: { label: string; onClick: () => void } | undefined;
+      let effectiveCountdown = countdown;
+      let toastKey: string | undefined = idOrKey;
+
+      if (actionOrOptions) {
+        if ("onClick" in actionOrOptions && "label" in actionOrOptions) {
+          action = actionOrOptions as { label: string; onClick: () => void };
+        } else {
+          const opts = actionOrOptions as ToastOptions;
+          if (opts.action) action = opts.action;
+          if (opts.countdown !== undefined) effectiveCountdown = opts.countdown;
+          if (opts.id) toastKey = opts.id;
+          else if (opts.key) toastKey = opts.key;
+        }
+      }
+
       const now = Date.now();
+
+      // If a toastKey or id is provided, deduplicate and update existing toast in-place
+      if (toastKey) {
+        setToasts((prev) => {
+          const existingIndex = prev.findIndex(
+            (t) => t.id === toastKey || t.key === toastKey,
+          );
+          if (existingIndex !== -1) {
+            const updated = [...prev];
+            updated[existingIndex] = {
+              ...updated[existingIndex],
+              message,
+              type,
+              action: action ?? updated[existingIndex].action,
+              countdown:
+                effectiveCountdown !== undefined
+                  ? effectiveCountdown
+                  : updated[existingIndex].countdown,
+              key: toastKey,
+              updatedAt: now,
+            };
+            return updated;
+          }
+          return [
+            ...prev,
+            {
+              id: toastKey,
+              key: toastKey,
+              message,
+              type,
+              action,
+              countdown: effectiveCountdown,
+              updatedAt: now,
+            },
+          ];
+        });
+        return;
+      }
+
       const lastSeen = recentMessagesRef.current.get(message);
-      if (countdown === undefined && lastSeen && now - lastSeen < 3000) {
+      if (effectiveCountdown === undefined && lastSeen && now - lastSeen < 3000) {
         return; // Suppress duplicate toast dispatch within 3-second window (#1748)
       }
       recentMessagesRef.current.set(message, now);
+      for (const [key, seenAt] of recentMessagesRef.current) {
+        if (now - seenAt > 3000) recentMessagesRef.current.delete(key);
+      }
+      while (recentMessagesRef.current.size > 50) {
+        const oldest = recentMessagesRef.current.keys().next().value;
+        if (oldest === undefined) break;
+        recentMessagesRef.current.delete(oldest);
+      }
 
-      const id = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
-        ? crypto.randomUUID()
-        : `${now}-${Math.random().toString(36).slice(2, 9)}-${recentMessagesRef.current.size}`;
+      const id =
+        typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+          ? crypto.randomUUID()
+          : `${now}-${Math.random().toString(36).slice(2, 9)}-${recentMessagesRef.current.size}`;
+
       setToasts((prev) => {
-        if (countdown !== undefined && message.includes("Rate limit")) {
+        if (effectiveCountdown !== undefined && message.includes("Rate limit")) {
           const existingIndex = prev.findIndex(
             (t) =>
               t.countdown !== undefined && t.message.includes("Rate limit"),
@@ -76,15 +152,27 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
             const updated = [...prev];
             updated[existingIndex] = {
               ...updated[existingIndex],
+              message,
               countdown: Math.max(
                 updated[existingIndex].countdown || 0,
-                countdown,
+                effectiveCountdown,
               ),
+              updatedAt: now,
             };
             return updated;
           }
         }
-        return [...prev, { id, message, type, action, countdown }];
+        return [
+          ...prev,
+          {
+            id,
+            message,
+            type,
+            action,
+            countdown: effectiveCountdown,
+            updatedAt: now,
+          },
+        ];
       });
     },
     [],
@@ -99,10 +187,13 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
       const customEvent = e as CustomEvent<{
         retryAfter: number;
         endpoint: string;
+        willRetry?: boolean;
       }>;
       const retryAfter = customEvent.detail?.retryAfter || 60;
       addToast(
-        "Rate limit reached. Try again in {countdown} seconds",
+        customEvent.detail?.willRetry
+          ? "Rate limit reached. Retrying automatically in {countdown} seconds"
+          : "Rate limit reached. Try again in {countdown} seconds",
         "error",
         undefined,
         retryAfter,
@@ -127,6 +218,15 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   );
 }
 
+/**
+ * Critical errors are announced assertively. Countdown toasts (e.g. rate
+ * limits) stay polite so the per-second text updates don't keep interrupting
+ * the screen reader.
+ */
+function isAssertive(toast: Toast): boolean {
+  return toast.type === "error" && toast.countdown === undefined;
+}
+
 function ToastContainer({
   toasts,
   onRemove,
@@ -134,21 +234,43 @@ function ToastContainer({
   toasts: Toast[];
   onRemove: (id: string) => void;
 }) {
+  // Both live regions stay mounted even when empty so assistive tech is
+  // already observing them when a toast is inserted (WCAG 2.1 SC 4.1.3).
   return (
     <div
       className="fixed bottom-6 right-6 z-[9999] flex flex-col gap-2 pointer-events-none"
-      aria-live="polite"
       aria-label="Notifications"
     >
-      {toasts.map((t) => (
-        <ToastItem key={t.id} toast={t} onRemove={onRemove} />
-      ))}
+      <div
+        className="flex flex-col gap-2"
+        aria-live="assertive"
+        aria-relevant="additions text"
+        data-testid="toast-region-assertive"
+      >
+        {toasts.filter(isAssertive).map((t) => (
+          <ToastItem key={t.id} toast={t} onRemove={onRemove} />
+        ))}
+      </div>
+      <div
+        className="flex flex-col gap-2"
+        aria-live="polite"
+        aria-relevant="additions text"
+        data-testid="toast-region-polite"
+      >
+        {toasts
+          .filter((t) => !isAssertive(t))
+          .map((t) => (
+            <ToastItem key={t.id} toast={t} onRemove={onRemove} />
+          ))}
+      </div>
     </div>
   );
 }
 
-/** Auto-dismiss timeout in milliseconds. */
+/** Default auto-dismiss timeout in milliseconds. */
 const TOAST_DURATION_MS = 4000;
+/** Default auto-dismiss timeout for warning and info toasts (5 seconds). */
+const WARNING_TOAST_DURATION_MS = 5000;
 
 function ToastItem({
   toast,
@@ -166,10 +288,15 @@ function ToastItem({
   const [isFocusedWithin, setIsFocusedWithin] = useState(false);
   const isInteracting = isPointerOver || isFocusedWithin;
 
+  // Count down against a fixed deadline rather than decrementing, so the
+  // number stays accurate when timers are throttled in background tabs (#1732).
+  const deadlineRef = useRef<number | null>(null);
+
   useEffect(() => {
     if (toast.countdown === undefined) return;
+    deadlineRef.current = Date.now() + toast.countdown * 1000;
     setCountdown(toast.countdown);
-  }, [toast.countdown]);
+  }, [toast.countdown, toast.updatedAt]);
 
   useEffect(() => {
     if (countdown === undefined) return;
@@ -178,7 +305,14 @@ function ToastItem({
       return;
     }
     const timer = setInterval(() => {
-      setCountdown((prev) => (prev !== undefined ? prev - 1 : undefined));
+      const deadline = deadlineRef.current;
+      setCountdown((prev) =>
+        deadline === null
+          ? prev !== undefined
+          ? prev - 1
+          : undefined
+          : Math.max(0, Math.ceil((deadline - Date.now()) / 1000)),
+      );
     }, 1000);
     return () => clearInterval(timer);
   }, [countdown, toast.id, onRemove]);
@@ -187,36 +321,50 @@ function ToastItem({
     if (toast.countdown !== undefined) return;
     if (isInteracting) return;
 
+    const duration =
+      toast.type === "warning" || toast.type === "info"
+        ? WARNING_TOAST_DURATION_MS
+        : TOAST_DURATION_MS;
+
     const timer = setTimeout(() => {
       onRemove(toast.id);
-    }, TOAST_DURATION_MS);
+    }, duration);
 
     return () => clearTimeout(timer);
-  }, [toast.id, onRemove, toast.countdown, isInteracting]);
+  }, [toast.id, onRemove, toast.countdown, isInteracting, toast.updatedAt, toast.message, toast.type]);
 
   const Icon =
     toast.type === "success"
       ? CheckCircle2
       : toast.type === "error"
         ? AlertCircle
-        : AlertTriangle;
+        : toast.type === "info"
+          ? Info
+          : AlertTriangle;
   const iconColor =
     toast.type === "success"
       ? "text-green-500"
       : toast.type === "error"
         ? "text-red-500"
-        : "text-amber-500";
+        : toast.type === "info"
+          ? "text-blue-500"
+          : "text-amber-500";
 
   const displayMessage =
     countdown !== undefined
       ? toast.message
           .replace("{countdown}", String(countdown))
-          .replace("1 seconds", "1 second")
+          // Singular only for exactly 1 — "11 seconds" must stay plural.
+          .replace(/(^|\D)1 seconds\b/, (_, before) => `${before}1 second`)
       : toast.message;
+
+  const assertive = isAssertive(toast);
 
   return (
     <div
-      role="status"
+      role={assertive ? "alert" : "status"}
+      aria-live={assertive ? "assertive" : "polite"}
+      aria-atomic="true"
       className={cn(
         "pointer-events-auto flex items-center gap-3 px-4 py-3 rounded-xl border shadow-lg backdrop-blur-md min-w-[280px] max-w-[380px]",
         "bg-white/90 dark:bg-zinc-900/90 border-zinc-200 dark:border-zinc-800",

@@ -11,6 +11,7 @@ import { analyzeVenueImage } from "@/lib/agents/VisionAgent";
 import { rateLimit, getRateLimitInfo } from "@/lib/rateLimit";
 import { ensureUserExists } from "@/lib/auth";
 import { emitWebhookEvent } from "@/lib/webhooks/deliver";
+import { sanitizeSearchQuery, splitSearchList } from "@/lib/searchSanitizer";
 
 // Search/autocomplete is expected to fire on every keystroke (debounced client-side
 // to ~250-300ms), which can mean several requests per second while someone types a
@@ -88,21 +89,37 @@ export async function GET(req: NextRequest) {
       : 50;
     const skip = (page - 1) * limit;
 
-    // Fallback: If no coordinates are provided, return all venues (or filtered by cities)
+    // Fallback: If no coordinates are provided, return all venues (or filtered by cities/query)
     if (!searchParams.get("lat") || !searchParams.get("lng")) {
       const citiesParam = searchParams.get("cities");
+      const queryParam = searchParams.get("query") || searchParams.get("q");
       const where: any = {};
+      const andConditions: any[] = [];
 
       if (citiesParam) {
-        const cityList = citiesParam
-          .split(",")
-          .map((c) => c.trim())
-          .filter(Boolean);
+        const cityList = splitSearchList(citiesParam);
         if (cityList.length > 0) {
-          where.OR = cityList.map((city) => ({
-            address: { contains: city, mode: "insensitive" },
-          }));
+          andConditions.push({
+            OR: cityList.map((city) => ({
+              address: { contains: city, mode: "insensitive" },
+            })),
+          });
         }
+      }
+
+      if (queryParam) {
+        andConditions.push({
+          OR: [
+            { name: { contains: queryParam, mode: "insensitive" } },
+            { address: { contains: queryParam, mode: "insensitive" } },
+          ],
+        });
+      }
+
+      if (andConditions.length === 1) {
+        Object.assign(where, andConditions[0]);
+      } else if (andConditions.length > 1) {
+        where.AND = andConditions;
       }
 
       const hasWhere = Object.keys(where).length > 0;
@@ -161,11 +178,12 @@ export async function GET(req: NextRequest) {
       "pourOverAvailable",
       "musicStyle",
       "cities",
+      "query",
     ];
     for (const key of keys) {
       const val = searchParams.get(key);
       if (val !== null) {
-        rawData[key] = val;
+        rawData[key] = sanitizeSearchQuery(val);
       }
     }
     const validation = validateRequest<VenueSearch>(venueSearchSchema, rawData);
@@ -322,10 +340,7 @@ export async function GET(req: NextRequest) {
     }
 
     if (rawData.cities) {
-      const cityList = String(rawData.cities)
-        .split(",")
-        .map((c: string) => c.trim())
-        .filter(Boolean);
+      const cityList = splitSearchList(String(rawData.cities));
       if (cityList.length > 0) {
         const cityConditions = cityList.map((city: string) => ({
           address: { contains: city, mode: "insensitive" },
@@ -339,8 +354,22 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    const total = await prisma.venue.count({ where });
-    const venues = await prisma.venue.findMany({
+    const querySearch = rawData.query || rawData.q;
+    if (querySearch) {
+      const queryConditions = [
+        { name: { contains: querySearch, mode: "insensitive" } },
+        { address: { contains: querySearch, mode: "insensitive" } },
+      ];
+      if (where.OR) {
+        where.AND = [{ OR: where.OR }, { OR: queryConditions }];
+        delete where.OR;
+      } else {
+        where.OR = queryConditions;
+      }
+    }
+
+    let total = await prisma.venue.count({ where });
+    let venues = await prisma.venue.findMany({
       where,
       include: {
         _count: {
@@ -351,6 +380,46 @@ export async function GET(req: NextRequest) {
       skip,
       take: limit,
     });
+
+    // ── Fuzzy typo-tolerant search fallback (#3958) ─────────────────────────
+    // If strict substring search returned 0 results and a text query was provided,
+    // fetch candidate venues and apply Levenshtein / Damerau-Levenshtein distance.
+    if (
+      venues.length === 0 &&
+      querySearch &&
+      typeof querySearch === "string" &&
+      querySearch.trim().length >= 3
+    ) {
+      const { fuzzyFilterVenues } = await import("@/lib/search/fuzzySearch");
+
+      // Build fallback query without the strict text query condition
+      const fallbackWhere = { ...where };
+      if (fallbackWhere.AND) {
+        fallbackWhere.AND = fallbackWhere.AND.filter(
+          (cond: any) => !cond.OR || cond.OR !== where.OR,
+        );
+        if (fallbackWhere.AND.length === 0) delete fallbackWhere.AND;
+      } else {
+        delete fallbackWhere.OR;
+      }
+
+      const allCandidates = await prisma.venue.findMany({
+        where: fallbackWhere,
+        include: {
+          _count: {
+            select: { favorites: true, ratings: true },
+          },
+          foodValidations: true,
+        },
+        take: 500,
+      });
+
+      const matchedFuzzy = fuzzyFilterVenues(allCandidates, querySearch);
+      if (matchedFuzzy.length > 0) {
+        venues = matchedFuzzy.slice(skip, skip + limit);
+        total = matchedFuzzy.length;
+      }
+    }
 
     return NextResponse.json({
       venues,

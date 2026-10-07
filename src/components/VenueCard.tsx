@@ -33,7 +33,9 @@ import {
 } from "lucide-react";
 import { useState, useEffect } from "react";
 import Image from "next/image";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { getVenueCoverTransitionName } from "@/lib/viewTransitions";
 import { NoiseTimeChart } from "@/components/noise/NoiseTimeChart";
 import { AmbientSoundPlayer } from "@/components/noise/AmbientSoundPlayer";
 import { AddToFolderModal } from "@/components/collections/AddToFolderModal";
@@ -44,6 +46,8 @@ import { getOpeningHoursStatus } from "@/lib/openingHours";
 import { MUSIC_GENRE_EMOJI, type MusicGenre } from "@/hooks/useLiveVenueData";
 import { HighlightedText } from "@/components/ui/HighlightedText";
 import { useSeatAvailability } from "@/hooks/useSeatAvailability";
+import { formatWalkingTimeBadge, haversineKm } from "@/lib/distance";
+import { generateBlurSvgDataUri } from "@/lib/image/blurPlaceholder";
 
 interface VenueEnrichData {
   found: boolean;
@@ -116,6 +120,33 @@ export function VenueCard({
   const [showFolderModal, setShowFolderModal] = useState(false);
   const [enableTransition, setEnableTransition] = useState(false);
   const [showGenreDropdown, setShowGenreDropdown] = useState(false);
+  const [userLocation, setUserLocation] = useState<{
+    lat: number;
+    lng: number;
+  } | null>(null);
+
+  useEffect(() => {
+    if (typeof navigator !== "undefined" && navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) =>
+          setUserLocation({
+            lat: pos.coords.latitude,
+            lng: pos.coords.longitude,
+          }),
+        () => setUserLocation(null),
+        { maximumAge: 60000, timeout: 5000 },
+      );
+    }
+  }, []);
+
+  const distanceKm = userLocation
+    ? haversineKm(
+        userLocation.lat,
+        userLocation.lng,
+        venue.position.lat,
+        venue.position.lng,
+      )
+    : null;
 
   const isCheckedInHere = checkedInVenueId === venue.id;
   const activeMusicGenre = liveData?.musicGenre ?? null;
@@ -275,18 +306,26 @@ export function VenueCard({
 
   // Load real vote metrics from the database on mount
   useEffect(() => {
+    let ignore = false;
     async function loadVoteMetrics() {
       try {
         const response = await fetch(`/api/venues/${venue.id}/amenity-votes`);
         if (response.ok) {
           const data = await response.json();
-          setVoteMetrics((prev) => ({ ...prev, ...data.metrics }));
+          if (!ignore) {
+            setVoteMetrics((prev) => ({ ...prev, ...data.metrics }));
+          }
         }
       } catch (error) {
-        console.error("Failed to load amenity vote metrics:", error);
+        if (!ignore) {
+          console.error("Failed to load amenity vote metrics:", error);
+        }
       }
     }
     loadVoteMetrics();
+    return () => {
+      ignore = true;
+    };
   }, [venue.id]);
 
   useEffect(() => {
@@ -343,6 +382,7 @@ export function VenueCard({
 
   // Fetch venue data from OSM + Unsplash (FREE)
   useEffect(() => {
+    let ignore = false;
     async function enrichVenue() {
       if (!venue.position) return;
 
@@ -357,16 +397,25 @@ export function VenueCard({
         const response = await fetch(`/api/venues/enrich?${params}`);
         if (response.ok) {
           const data = await response.json();
-          setEnrichData(data);
+          if (!ignore) {
+            setEnrichData(data);
+          }
         }
       } catch (error) {
-        console.error("Failed to enrich venue:", error);
+        if (!ignore) {
+          console.error("Failed to enrich venue:", error);
+        }
       } finally {
-        setIsLoading(false);
+        if (!ignore) {
+          setIsLoading(false);
+        }
       }
     }
 
     enrichVenue();
+    return () => {
+      ignore = true;
+    };
   }, [venue.name, venue.position]);
 
   const handleFavorite = async () => {
@@ -465,7 +514,7 @@ export function VenueCard({
       {/* Photo Section */}
       {photos.length > 0 && (
         <div
-          className="relative h-32 bg-zinc-100 dark:bg-zinc-800 cursor-pointer"
+          className="relative h-32 bg-zinc-100 dark:bg-zinc-800 cursor-pointer overflow-hidden"
           onClick={nextPhoto}
         >
           <Image
@@ -474,9 +523,14 @@ export function VenueCard({
             }
             alt={"Photo of " + venue.name}
             fill
-            className="object-cover"
+            className="object-cover transition-opacity duration-300 ease-in-out"
+            placeholder="blur"
+            blurDataURL={generateBlurSvgDataUri(photos[photoIndex] || venue.name)}
             unoptimized // External URLs from Foursquare
             onError={() => setPhotoError(true)}
+            style={{
+              viewTransitionName: getVenueCoverTransitionName(venue.id),
+            }}
           />
           {photos.length > 1 && (
             <div className="absolute bottom-2 right-2 px-2 py-1 bg-black/60 rounded-full text-xs text-white">
@@ -545,7 +599,16 @@ export function VenueCard({
         <div className="flex items-start justify-between mb-2 mt-4">
           <div className="flex-1">
             <h3 className="font-semibold text-zinc-900 dark:text-zinc-50 flex items-center gap-2">
-              <HighlightedText text={venue.name} query={searchQuery} />
+              {venue.id ? (
+                <Link
+                  href={`/venues/${venue.id}`}
+                  className="hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded"
+                >
+                  <HighlightedText text={venue.name} query={searchQuery} />
+                </Link>
+              ) : (
+                <HighlightedText text={venue.name} query={searchQuery} />
+              )}
               {venue.isClaimed && (
                 <span title="Verified Host" className="inline-flex shrink-0">
                   <BadgeCheck className="w-4 h-4 text-green-500 shrink-0" />
@@ -558,6 +621,14 @@ export function VenueCard({
             <p className="text-sm text-zinc-600 dark:text-zinc-400">
               {venue.address || "Address not available"}
             </p>
+            {distanceKm !== null && (
+              <div className="mt-1.5 mb-1 flex items-center">
+                <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-bold bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300 border border-blue-100 dark:border-blue-800/50">
+                  <Navigation className="w-3 h-3" />
+                  {formatWalkingTimeBadge(distanceKm)}
+                </span>
+              </div>
+            )}
             {liveOccupancy && liveOccupancy.count > 0 && (
               <span className="mt-1 inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-600 dark:text-emerald-400">
                 <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
@@ -565,28 +636,31 @@ export function VenueCard({
                 {liveOccupancy.count === 1 ? "person" : "people"} here now
               </span>
             )}
-            {liveOccupancy && (() => {
-              // Crowding badge: Quiet (<40%), Moderate (40-75%), Busy (>75%)
-              const pct = liveOccupancy.capacity > 0
-                ? (liveOccupancy.count / liveOccupancy.capacity) * 100
-                : 0;
-              const label = pct < 40 ? "Quiet" : pct <= 75 ? "Moderate" : "Busy";
-              const style =
-                pct < 40
-                  ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
-                  : pct <= 75
-                    ? "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400"
-                    : "bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400";
-              return (
-                <span
-                  className={`mt-0.5 inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-semibold ${style}`}
-                  title={`${Math.round(pct)}% occupancy — ${label}`}
-                  aria-label={`Venue is currently ${label} — ${Math.round(pct)}% occupied`}
-                >
-                  {label}
-                </span>
-              );
-            })()}
+            {liveOccupancy &&
+              (() => {
+                // Crowding badge: Quiet (<40%), Moderate (40-75%), Busy (>75%)
+                const pct =
+                  liveOccupancy.capacity > 0
+                    ? (liveOccupancy.count / liveOccupancy.capacity) * 100
+                    : 0;
+                const label =
+                  pct < 40 ? "Quiet" : pct <= 75 ? "Moderate" : "Busy";
+                const style =
+                  pct < 40
+                    ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
+                    : pct <= 75
+                      ? "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400"
+                      : "bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400";
+                return (
+                  <span
+                    className={`mt-0.5 inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-semibold ${style}`}
+                    title={`${Math.round(pct)}% occupancy — ${label}`}
+                    aria-label={`Venue is currently ${label} — ${Math.round(pct)}% occupied`}
+                  >
+                    {label}
+                  </span>
+                );
+              })()}
           </div>
           <button
             onClick={handleFavorite}

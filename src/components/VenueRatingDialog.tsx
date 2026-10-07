@@ -38,7 +38,7 @@ interface VenueRatingDialogProps {
     waterBowlsProvided?: boolean;
     dogFriendly?: boolean;
     catsAllowed?: boolean;
-  }) => void;
+  }) => void | Promise<void>;
 }
 
 export function VenueRatingDialog({
@@ -187,6 +187,8 @@ export function VenueRatingDialog({
       return;
     }
 
+    const trimmedComment = comment.trim();
+
     setIsSubmitting(true);
 
     try {
@@ -197,7 +199,7 @@ export function VenueRatingDialog({
         noiseLevel,
         avgDecibels: measurement?.averageDb,
         peakDecibels: measurement?.peakDb,
-        comment: comment.trim() || undefined,
+        comment: trimmedComment.length > 0 ? trimmedComment : undefined,
         hasErgonomic,
         outletDensity,
         wifiSpeed: wifiSpeed ? parseInt(wifiSpeed, 10) : undefined,

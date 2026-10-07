@@ -1,10 +1,12 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useWebXR } from "@/hooks/useWebXR";
+import { useFocusTrap } from "@/hooks/useFocusTrap";
 import ARNavigation from "./ARNavigation";
 import CompassFallback from "./CompassFallback";
-import { View } from "lucide-react";
+import { IndoorPositioningMap } from "@/components/spatial/IndoorPositioningMap";
+import { View, Map, Compass, X } from "lucide-react";
 import usePartySocket from "@/hooks/usePartySocketReconnect";
 import { todayInTimeZone } from "@/lib/bookingTime";
 
@@ -26,16 +28,35 @@ interface AnchorData {
   seat: { id: string; seatNumber: string; type: string } | null;
 }
 
+interface VenueLocation {
+  name?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
+}
+
 interface NavigationContainerProps {
   venueId: string;
+  venue?: VenueLocation | null;
+  onClose?: () => void;
+  trapFocus?: boolean;
 }
 
 export default function NavigationContainer({
   venueId,
+  venue,
+  onClose,
+  trapFocus = true,
 }: NavigationContainerProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useFocusTrap(containerRef, {
+    isActive: trapFocus,
+    onEscape: onClose,
+  });
   const { isSupported, requestSession } = useWebXR();
   const [session, setSession] = useState<XRSession | null>(null);
   const [useFallback, setUseFallback] = useState(false);
+  const [fallbackMode, setFallbackMode] = useState<"ekf" | "compass">("ekf");
   const [seats, setSeats] = useState<SeatData[]>([]);
   const [anchors, setAnchors] = useState<AnchorData[]>([]);
   const [loading, setLoading] = useState(true);
@@ -187,11 +208,103 @@ export default function NavigationContainer({
   }
 
   if (useFallback || isSupported === false) {
-    return <CompassFallback />;
+    return (
+      <div
+        ref={containerRef}
+        role="region"
+        aria-label="AR Fallback Navigation"
+        tabIndex={-1}
+        className="flex flex-col w-full h-full space-y-4 focus:outline-none"
+      >
+        <div className="flex items-center justify-between bg-slate-900/90 border border-slate-800 p-2.5 rounded-xl">
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setFallbackMode("ekf")}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                fallbackMode === "ekf"
+                  ? "bg-blue-600 text-white shadow-sm"
+                  : "text-slate-400 hover:text-white"
+              }`}
+            >
+              <Map className="w-3.5 h-3.5" />
+              <span>2D EKF Indoor Fusion</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setFallbackMode("compass")}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                fallbackMode === "compass"
+                  ? "bg-blue-600 text-white shadow-sm"
+                  : "text-slate-400 hover:text-white"
+              }`}
+            >
+              <Compass className="w-3.5 h-3.5" />
+              <span>Compass Heading</span>
+            </button>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {isSupported && (
+              <button
+                type="button"
+                onClick={() => setUseFallback(false)}
+                className="text-xs text-blue-400 hover:text-blue-300 font-bold px-3 py-1.5"
+              >
+                Switch to AR
+              </button>
+            )}
+
+            {onClose && (
+              <button
+                type="button"
+                onClick={onClose}
+                aria-label="Close navigation"
+                className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+        </div>
+
+        {fallbackMode === "ekf" ? (
+          <IndoorPositioningMap
+            venueName={venue?.name || "Venue Navigation"}
+            className="flex-1"
+          />
+        ) : (
+          <CompassFallback
+            destinationLat={venue?.latitude}
+            destinationLng={venue?.longitude}
+            destinationName={venue?.name}
+            onRetryAR={isSupported ? () => setUseFallback(false) : undefined}
+            onClose={onClose}
+          />
+        )}
+      </div>
+    );
   }
 
   return (
-    <div className="flex flex-col items-center justify-center min-h-[400px] w-full bg-slate-900 rounded-lg p-6 text-white border border-slate-800">
+    <div
+      ref={containerRef}
+      role="region"
+      aria-label="AR Desk Finder"
+      tabIndex={-1}
+      className="flex flex-col items-center justify-center min-h-[400px] w-full bg-slate-900 rounded-lg p-6 text-white border border-slate-800 relative focus:outline-none"
+    >
+      {onClose && (
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close AR Desk Finder"
+          className="absolute top-4 right-4 p-2 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors"
+        >
+          <X className="w-5 h-5" />
+        </button>
+      )}
+
       <div className="bg-blue-500/20 p-4 rounded-full mb-6">
         <View className="w-12 h-12 text-blue-400" />
       </div>
@@ -211,12 +324,14 @@ export default function NavigationContainer({
       ) : (
         <div className="flex flex-col sm:flex-row gap-4">
           <button
+            type="button"
             onClick={startAR}
             className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 rounded-md font-medium transition-colors shadow-lg shadow-blue-500/20"
           >
             Start AR Session
           </button>
           <button
+            type="button"
             onClick={() => setUseFallback(true)}
             className="bg-slate-800 hover:bg-slate-700 text-slate-200 px-8 py-3 rounded-md font-medium transition-colors border border-slate-700"
           >
