@@ -104,28 +104,28 @@ export function CopyBookingReferenceButton({
   const getTooltipPositionClasses = () => {
     switch (tooltipPosition) {
       case "bottom":
-        return "top-full left-1/2 -translate-x-1/2 mt-2";
+        return "top-full right-0 sm:left-1/2 translate-x-0 sm:-translate-x-1/2 mt-2";
       case "left":
         return "right-full top-1/2 -translate-y-1/2 mr-2";
       case "right":
         return "left-full top-1/2 -translate-y-1/2 ml-2";
       case "top":
       default:
-        return "bottom-full left-1/2 -translate-x-1/2 mb-2";
+        return "bottom-full right-0 sm:left-1/2 translate-x-0 sm:-translate-x-1/2 mb-2";
     }
   };
 
   const getArrowClasses = () => {
     switch (tooltipPosition) {
       case "bottom":
-        return "-top-1 left-1/2 -translate-x-1/2 border-b-zinc-900 dark:border-b-zinc-100 border-x-transparent border-t-transparent";
+        return "-top-1 right-3 sm:left-1/2 sm:right-auto sm:-translate-x-1/2 border-b-zinc-900 dark:border-b-zinc-100 border-x-transparent border-t-transparent";
       case "left":
         return "-right-1 top-1/2 -translate-y-1/2 border-l-zinc-900 dark:border-l-zinc-100 border-y-transparent border-r-transparent";
       case "right":
         return "-left-1 top-1/2 -translate-y-1/2 border-r-zinc-900 dark:border-r-zinc-100 border-y-transparent border-l-transparent";
       case "top":
       default:
-        return "-bottom-1 left-1/2 -translate-x-1/2 border-t-zinc-900 dark:border-t-zinc-100 border-x-transparent border-b-transparent";
+        return "-bottom-1 right-3 sm:left-1/2 sm:right-auto sm:-translate-x-1/2 border-t-zinc-900 dark:border-t-zinc-100 border-x-transparent border-b-transparent";
     }
   };
 
