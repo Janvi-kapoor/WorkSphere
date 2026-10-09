@@ -82,9 +82,18 @@ export class CompassKalmanFilter {
   private initialP: number;
 
   constructor(options: CompassKalmanFilterOptions = {}) {
-    this.q = options.q ?? 0.05;
-    this.r = options.r ?? 0.5;
-    this.p = options.p ?? 1.0;
+    this.q =
+      options.q !== undefined && Number.isFinite(options.q) && options.q > 0
+        ? options.q
+        : 0.05;
+    this.r =
+      options.r !== undefined && Number.isFinite(options.r) && options.r > 0
+        ? options.r
+        : 0.5;
+    this.p =
+      options.p !== undefined && Number.isFinite(options.p) && options.p > 0
+        ? options.p
+        : 1.0;
     this.initialP = this.p;
   }
 
@@ -164,8 +173,10 @@ export class CompassKalmanFilter {
    * Updates the filter covariance tuning parameters.
    */
   public setParameters(params: { q?: number; r?: number }): void {
-    if (params.q !== undefined && params.q > 0) this.q = params.q;
-    if (params.r !== undefined && params.r > 0) this.r = params.r;
+    if (params.q !== undefined && Number.isFinite(params.q) && params.q > 0)
+      this.q = params.q;
+    if (params.r !== undefined && Number.isFinite(params.r) && params.r > 0)
+      this.r = params.r;
   }
 }
 

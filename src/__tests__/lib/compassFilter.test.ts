@@ -98,6 +98,20 @@ describe("compassFilter null sensor and radian conversion handling (#4792)", () 
     });
   });
 
+  describe("CompassKalmanFilter parameter validation", () => {
+    it("guards against non-finite or non-positive covariance parameters", () => {
+      const filter = new CompassKalmanFilter({ q: Infinity, r: NaN, p: -5 });
+      // Should fall back to safe default parameters
+      filter.setParameters({ q: Infinity, r: -1 });
+      const heading = filter.update(100);
+      expect(heading).toBe(100);
+      expect(Number.isFinite(heading)).toBe(true);
+
+      const next = filter.update(120);
+      expect(Number.isFinite(next)).toBe(true);
+    });
+  });
+
   describe("smoothCircularHeading null handling", () => {
     it("safely handles null and undefined readings without returning NaN", () => {
       expect(smoothCircularHeading(null, null)).toBe(0);
