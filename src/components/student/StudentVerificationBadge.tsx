@@ -111,7 +111,7 @@ export function StudentVerificationBadge({
         <div
           id="student-verification-tooltip"
           role="tooltip"
-          className="absolute top-full mt-2 left-1/2 -translate-x-1/2 z-50 px-3 py-2 text-sm text-zinc-700 dark:text-zinc-300 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-md shadow-md w-max flex flex-col gap-1"
+          className="absolute top-full mt-2 right-0 sm:left-1/2 translate-x-0 sm:-translate-x-1/2 z-50 px-3 py-2 text-sm text-zinc-700 dark:text-zinc-300 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-md shadow-md w-max max-w-[calc(100vw-2rem)] flex flex-col gap-1"
         >
           <span className="font-semibold text-zinc-900 dark:text-zinc-100">
             Verified Student

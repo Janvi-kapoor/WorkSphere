@@ -192,3 +192,31 @@ it("handles missing commitment hash gracefully", async () => {
   });
   expect(screen.queryByText(/Proof:/)).not.toBeInTheDocument();
 });
+
+it("applies responsive boundary alignment classes to prevent tooltip clipping", async () => {
+  global.fetch = jest.fn().mockResolvedValue({
+    json: async () => ({
+      verified: true,
+      expiresAt: "2027-01-01T00:00:00.000Z",
+    }),
+  });
+
+  render(<StudentVerificationBadge />);
+
+  await waitFor(() => {
+    expect(screen.getByText("Verified Student")).toBeInTheDocument();
+  });
+
+  const badgeDiv = screen.getByText("Verified Student").closest("div")!;
+  fireEvent.mouseEnter(badgeDiv);
+
+  await waitFor(() => {
+    const tooltip = screen.getByRole("tooltip");
+    expect(tooltip).toBeInTheDocument();
+    expect(tooltip).toHaveClass("right-0");
+    expect(tooltip).toHaveClass("sm:left-1/2");
+    expect(tooltip).toHaveClass("translate-x-0");
+    expect(tooltip).toHaveClass("sm:-translate-x-1/2");
+  });
+});
+
