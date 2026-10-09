@@ -101,8 +101,15 @@ export class RatingAggregator {
 
     // 7. Wi-Fi Speed Average
     const validSpeeds = allRatings
-      .filter((r: any) => r.wifiSpeed !== null && r.wifiSpeed > 0)
-      .map((r: any) => Number(r.wifiSpeed));
+      .map((r: any) => {
+        if (typeof r.wifiSpeed === "number") return r.wifiSpeed;
+        if (typeof r.wifiSpeed === "string") {
+          const parsed = parseFloat(r.wifiSpeed.trim());
+          return Number.isFinite(parsed) ? parsed : NaN;
+        }
+        return NaN;
+      })
+      .filter((speed: number) => Number.isFinite(speed) && speed > 0);
 
     const avgSpeed =
       validSpeeds.length > 0
