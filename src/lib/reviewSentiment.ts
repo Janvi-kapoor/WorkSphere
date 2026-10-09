@@ -102,17 +102,64 @@ const isNegated = (tokens: string[], index: number): boolean => {
   return previous >= 0 && NEGATIONS.has(tokens[previous]);
 };
 
+export interface SentimentAnalysisResult {
+  score: number;
+  category: "positive" | "neutral" | "negative";
+  tokenCount: number;
+}
+
+/**
+ * Analyzes sentiment for a text string.
+ * Returns clean neutral score object ({ score: 0.0, category: "neutral", tokenCount: 0 })
+ * when the string is empty or contains only emoji/punctuation.
+ */
+export function analyzeSentiment(
+  comment: string | null | undefined,
+): SentimentAnalysisResult {
+  if (!comment || typeof comment !== "string" || comment.trim().length === 0) {
+    return { score: 0.0, category: "neutral", tokenCount: 0 };
+  }
+
+  const tokens = comment.toLowerCase().match(/[a-z']+/g);
+  if (!tokens || tokens.length === 0) {
+    return { score: 0.0, category: "neutral", tokenCount: 0 };
+  }
+
+  let positive = 0;
+  let negative = 0;
+  tokens.forEach((token, index) => {
+    const isPositive = POSITIVE_WORDS.has(token);
+    const isNegative = NEGATIVE_WORDS.has(token);
+    if (!isPositive && !isNegative) return;
+    const flipped = isNegated(tokens, index);
+    if (isPositive !== flipped) positive += 1;
+    else negative += 1;
+  });
+
+  const total = positive + negative;
+  if (total === 0) {
+    return { score: 0.0, category: "neutral", tokenCount: tokens.length };
+  }
+
+  const rawScore = (positive - negative) / total;
+  const score = Math.round(rawScore * 100) / 100;
+  const category: "positive" | "neutral" | "negative" =
+    score > 0.15 ? "positive" : score < -0.15 ? "negative" : "neutral";
+
+  return { score, category, tokenCount: tokens.length };
+}
+
 /**
  * Scores one comment from -1 (all negative words) to 1 (all positive words).
- * Returns null when it contains no sentiment words. "not bad" counts as
- * positive and "not good" as negative.
+ * Returns null when it contains no sentiment words or when token count is zero.
+ * "not bad" counts as positive and "not good" as negative.
  */
 export function scoreComment(
   comment: string | null | undefined,
 ): number | null {
-  if (!comment) return null;
+  if (!comment || typeof comment !== "string" || comment.trim().length === 0) return null;
   const tokens = comment.toLowerCase().match(/[a-z']+/g);
-  if (!tokens) return null;
+  if (!tokens || tokens.length === 0) return null;
 
   let positive = 0;
   let negative = 0;
@@ -142,7 +189,8 @@ const noiseSignal = (level: string | null | undefined): number | null => {
   return null;
 };
 
-const isNumber = (value: number | null): value is number => value !== null;
+const isNumber = (value: number | null): value is number =>
+  typeof value === "number" && !Number.isNaN(value) && Number.isFinite(value);
 
 /** Average of the available signals: comment words, WiFi rating, noise level. */
 function reviewScore(review: SentimentReview): number | null {
@@ -152,7 +200,8 @@ function reviewScore(review: SentimentReview): number | null {
     noiseSignal(review.noiseLevel),
   ].filter(isNumber);
   if (signals.length === 0) return null;
-  return signals.reduce((sum, value) => sum + value, 0) / signals.length;
+  const avg = signals.reduce((sum, value) => sum + value, 0) / signals.length;
+  return Number.isNaN(avg) || !Number.isFinite(avg) ? null : avg;
 }
 
 const timestamp = (review: SentimentReview): number => {
@@ -237,6 +286,7 @@ export function summarizeReviewSentiment(
   if (scores.length < MIN_REVIEWS_FOR_SENTIMENT) return null;
 
   const score = scores.reduce((sum, value) => sum + value, 0) / scores.length;
+  if (Number.isNaN(score) || !Number.isFinite(score)) return null;
 
   let label: SentimentLabel = "mixed";
   if (score >= POSITIVE_THRESHOLD) label = "positive";
@@ -244,8 +294,55 @@ export function summarizeReviewSentiment(
 
   return {
     label,
-    score,
+    score: Math.round(score * 100) / 100,
     reviewCount: scores.length,
     highlights: buildHighlights(recent),
   };
 }
+
+export type ReviewSentimentCategory = "positive" | "neutral" | "critical";
+
+/**
+ * Classifies a single review's sentiment into "positive" | "neutral" | "critical".
+ */
+export function classifyReviewSentiment(
+  review: SentimentReview | { comment?: string | null; wifiQuality?: number | null; noiseLevel?: string | null } | null | undefined,
+): ReviewSentimentCategory {
+  if (!review) return "neutral";
+  const score = reviewScore(review as SentimentReview);
+  if (score === null) {
+    const textAnalysis = analyzeSentiment(review.comment);
+    if (textAnalysis.category === "positive") return "positive";
+    if (textAnalysis.category === "negative") return "critical";
+    return "neutral";
+  }
+  if (score >= POSITIVE_THRESHOLD) return "positive";
+  if (score <= NEEDS_IMPROVEMENT_THRESHOLD) return "critical";
+  return "neutral";
+}
+
+/**
+ * Filters a list of reviews according to selected sentiment filter:
+ * "all" | "positive" | "neutral" | "critical"
+ */
+export function filterReviewsBySentiment<T extends SentimentReview>(
+  reviews: T[] | null | undefined,
+  filter: "all" | "positive" | "neutral" | "critical" | string,
+): T[] {
+  if (!reviews || !Array.isArray(reviews)) return [];
+  if (!filter || filter === "all") return reviews;
+
+  const normalized = filter.toLowerCase();
+  return reviews.filter((review) => {
+    const sentiment = classifyReviewSentiment(review);
+    if (
+      normalized === "critical" ||
+      normalized === "negative" ||
+      normalized === "needs_improvement"
+    ) {
+      return sentiment === "critical";
+    }
+    return sentiment === normalized;
+  });
+}
+
