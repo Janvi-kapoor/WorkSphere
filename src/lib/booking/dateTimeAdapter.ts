@@ -214,12 +214,19 @@ export function bookingInterval(
   const startsAt = bookingStartsAt(slot, fallbackTimeZone);
   if (!startsAt) return null;
 
+  const safeDefault =
+    typeof defaultDurationMinutes === "number" &&
+    Number.isFinite(defaultDurationMinutes) &&
+    defaultDurationMinutes > 0
+      ? defaultDurationMinutes
+      : 60;
+
   const minutes =
     typeof slot.duration === "number" &&
     Number.isFinite(slot.duration) &&
     slot.duration > 0
       ? slot.duration
-      : defaultDurationMinutes;
+      : safeDefault;
 
   const start = startsAt.getTime();
   return { start, end: start + minutes * 60_000 };
@@ -259,9 +266,13 @@ export function conflictDateWindow(
   radiusDays: number = 3,
 ): string[] {
   if (!isValidBookingDate(date)) return [];
+  const safeRadius =
+    typeof radiusDays === "number" && Number.isFinite(radiusDays)
+      ? Math.max(0, Math.floor(radiusDays))
+      : 3;
   const [y, m, d] = date.split("-").map(Number);
   const dates: string[] = [];
-  for (let offset = -radiusDays; offset <= radiusDays; offset++) {
+  for (let offset = -safeRadius; offset <= safeRadius; offset++) {
     dates.push(
       new Date(Date.UTC(y, m - 1, d + offset)).toISOString().slice(0, 10),
     );

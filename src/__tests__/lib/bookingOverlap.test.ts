@@ -216,4 +216,11 @@ describe("conflictDateWindow", () => {
     expect(conflicts).toBeGreaterThan(0);
     expect(furthestOffset).toBeLessThanOrEqual(CONFLICT_DATE_WINDOW_DAYS);
   });
+
+  it("handles 0, negative, and non-finite radiusDays gracefully", () => {
+    expect(conflictDateWindow("2026-10-10", 0)).toEqual(["2026-10-10"]);
+    expect(conflictDateWindow("2026-10-10", -5)).toEqual(["2026-10-10"]);
+    // Non-finite falls back to default 3 days
+    expect(conflictDateWindow("2026-10-10", NaN)).toHaveLength(7);
+  });
 });
