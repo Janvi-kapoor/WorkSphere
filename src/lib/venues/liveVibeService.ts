@@ -167,7 +167,11 @@ export async function getVenueLiveVibe(venueId: string): Promise<VibeSummary> {
     pulseColor: config.pulseColor,
     badgeText,
     breakdown,
-    lastUpdated: feedbacks[0]?.createdAt.toISOString() ?? null,
+    lastUpdated: feedbacks[0]?.createdAt
+      ? feedbacks[0].createdAt instanceof Date
+        ? feedbacks[0].createdAt.toISOString()
+        : new Date(feedbacks[0].createdAt).toISOString()
+      : null,
   };
 }
 
