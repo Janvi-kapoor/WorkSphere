@@ -25,6 +25,10 @@ interface VenueSearchData {
   lat: number;
   lng: number;
   radius: number;
+  minLat?: number;
+  maxLat?: number;
+  minLng?: number;
+  maxLng?: number;
   category?: string;
   wifi?: boolean;
   outlets?: boolean;
@@ -93,8 +97,44 @@ export async function GET(req: NextRequest) {
     if (!searchParams.get("lat") || !searchParams.get("lng")) {
       const citiesParam = searchParams.get("cities");
       const queryParam = searchParams.get("query") || searchParams.get("q");
+      const minLatParam = searchParams.get("minLat");
+      const maxLatParam = searchParams.get("maxLat");
+      const minLngParam = searchParams.get("minLng");
+      const maxLngParam = searchParams.get("maxLng");
       const where: any = {};
       const andConditions: any[] = [];
+
+      if (minLatParam !== null && !isNaN(Number(minLatParam)) && maxLatParam !== null && !isNaN(Number(maxLatParam))) {
+        andConditions.push({
+          latitude: {
+            gte: parseFloat(minLatParam),
+            lte: parseFloat(maxLatParam),
+          },
+        });
+      } else {
+        if (minLatParam !== null && !isNaN(Number(minLatParam))) {
+          andConditions.push({ latitude: { gte: parseFloat(minLatParam) } });
+        }
+        if (maxLatParam !== null && !isNaN(Number(maxLatParam))) {
+          andConditions.push({ latitude: { lte: parseFloat(maxLatParam) } });
+        }
+      }
+
+      if (minLngParam !== null && !isNaN(Number(minLngParam)) && maxLngParam !== null && !isNaN(Number(maxLngParam))) {
+        andConditions.push({
+          longitude: {
+            gte: parseFloat(minLngParam),
+            lte: parseFloat(maxLngParam),
+          },
+        });
+      } else {
+        if (minLngParam !== null && !isNaN(Number(minLngParam))) {
+          andConditions.push({ longitude: { gte: parseFloat(minLngParam) } });
+        }
+        if (maxLngParam !== null && !isNaN(Number(maxLngParam))) {
+          andConditions.push({ longitude: { lte: parseFloat(maxLngParam) } });
+        }
+      }
 
       if (citiesParam) {
         const cityList = splitSearchList(citiesParam);
@@ -179,6 +219,10 @@ export async function GET(req: NextRequest) {
       "musicStyle",
       "cities",
       "query",
+      "minLat",
+      "maxLat",
+      "minLng",
+      "maxLng",
     ];
     for (const key of keys) {
       const val = searchParams.get(key);
@@ -196,6 +240,10 @@ export async function GET(req: NextRequest) {
       lat,
       lng,
       radius,
+      minLat,
+      maxLat,
+      minLng,
+      maxLng,
       category,
       wifi,
       outlets,
@@ -227,12 +275,12 @@ export async function GET(req: NextRequest) {
 
     const where: any = {
       latitude: {
-        gte: lat - latDelta,
-        lte: lat + latDelta,
+        gte: minLat !== undefined ? minLat : lat - latDelta,
+        lte: maxLat !== undefined ? maxLat : lat + latDelta,
       },
       longitude: {
-        gte: lng - lngDelta,
-        lte: lng + lngDelta,
+        gte: minLng !== undefined ? minLng : lng - lngDelta,
+        lte: maxLng !== undefined ? maxLng : lng + lngDelta,
       },
     };
 
@@ -395,9 +443,15 @@ export async function GET(req: NextRequest) {
       // Build fallback query without the strict text query condition
       const fallbackWhere = { ...where };
       if (fallbackWhere.AND) {
-        fallbackWhere.AND = fallbackWhere.AND.filter(
-          (cond: any) => !cond.OR || cond.OR !== where.OR,
-        );
+        fallbackWhere.AND = fallbackWhere.AND.filter((cond: any) => {
+          if (!cond.OR || !Array.isArray(cond.OR)) return true;
+          const isQueryCond = cond.OR.some(
+            (c: any) =>
+              c.name?.contains === querySearch ||
+              c.address?.contains === querySearch,
+          );
+          return !isQueryCond;
+        });
         if (fallbackWhere.AND.length === 0) delete fallbackWhere.AND;
       } else {
         delete fallbackWhere.OR;
@@ -405,19 +459,39 @@ export async function GET(req: NextRequest) {
 
       const allCandidates = await prisma.venue.findMany({
         where: fallbackWhere,
-        include: {
-          _count: {
-            select: { favorites: true, ratings: true },
-          },
-          foodValidations: true,
+        select: {
+          id: true,
+          name: true,
+          address: true,
+          description: true,
         },
         take: 500,
       });
 
       const matchedFuzzy = fuzzyFilterVenues(allCandidates, querySearch);
       if (matchedFuzzy.length > 0) {
-        venues = matchedFuzzy.slice(skip, skip + limit);
         total = matchedFuzzy.length;
+        const pageItems = matchedFuzzy.slice(skip, skip + limit);
+        const pageIds = pageItems.map((v) => v.id);
+
+        if (pageIds.length > 0) {
+          const detailedVenues = await prisma.venue.findMany({
+            where: { id: { in: pageIds } },
+            include: {
+              _count: {
+                select: { favorites: true, ratings: true },
+              },
+              foodValidations: true,
+            },
+          });
+
+          const venueMap = new Map(detailedVenues.map((v) => [v.id, v]));
+          venues = pageIds
+            .map((id) => venueMap.get(id))
+            .filter(Boolean) as typeof detailedVenues;
+        } else {
+          venues = [];
+        }
       }
     }
 

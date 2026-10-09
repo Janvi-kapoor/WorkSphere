@@ -15,6 +15,7 @@ import {
   Link2,
   ShieldCheck,
   AlertCircle,
+  Ticket,
 } from "lucide-react";
 import ScreenSharePanel from "@/components/sessions/ScreenSharePanel";
 import Scratchpad from "@/components/sessions/Scratchpad";
@@ -25,6 +26,7 @@ import {
   ValidationResult,
 } from "@/lib/sessionInviteTokens";
 import { SocialShareButton } from "@/components/social/SocialShareButton";
+import { generateAdmissionTicketQR } from "@/lib/social/admissionTicket";
 
 type Props = {
   session: {
@@ -83,6 +85,47 @@ export default function SessionDetailClient({ session }: Props) {
     () => (user?.id ? rsvps.find((r) => r.user.id === user.id) : null),
     [rsvps, user?.id],
   );
+
+  const waitlistPosition = useMemo(() => {
+    if (!user?.id || currentRsvp?.status !== "MAYBE") return null;
+    const idx = waitlisted.findIndex((r) => r.user.id === user.id);
+    return idx !== -1 ? idx + 1 : null;
+  }, [waitlisted, user?.id, currentRsvp?.status]);
+
+  // Real-time polling to refresh RSVPs and waitlist positions (#5035)
+  useEffect(() => {
+    let mounted = true;
+    const interval = setInterval(async () => {
+      try {
+        const refreshed = await fetch(`/api/social/sessions/${session.slug}`, {
+          cache: "no-store",
+        });
+        if (refreshed.ok && mounted) {
+          const data = await refreshed.json();
+          if (data.rsvps) {
+            setRsvps(data.rsvps);
+          }
+        }
+      } catch {
+        // Silently ignore background polling errors
+      }
+    }, 10000);
+
+    return () => {
+      mounted = false;
+      clearInterval(interval);
+    };
+  }, [session.slug]);
+
+  const attendeeId = user?.id || currentRsvp?.user?.id || "attendee";
+  const ticketQrSvg = useMemo(() => {
+    return generateAdmissionTicketQR({
+      sessionSlug: session.slug,
+      userId: attendeeId,
+      venueName: session.venue?.name,
+      startsAt: session.startsAt,
+    });
+  }, [attendeeId, session.slug, session.venue?.name, session.startsAt]);
 
   const isFull = Boolean(session.maxGuests && going.length >= session.maxGuests);
 
@@ -201,6 +244,14 @@ export default function SessionDetailClient({ session }: Props) {
                   }`}
                 >
                   Your status: {currentRsvp.status === "MAYBE" ? "Waitlisted / Maybe" : currentRsvp.status}
+                </span>
+              )}
+              {currentRsvp?.status === "MAYBE" && waitlistPosition !== null && (
+                <span
+                  data-testid="waitlist-position-badge"
+                  className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/40 bg-amber-500/20 px-3 py-1 text-xs font-semibold text-amber-200"
+                >
+                  Waitlist Position: #{waitlistPosition} of {waitlisted.length}
                 </span>
               )}
             </div>
@@ -332,37 +383,114 @@ export default function SessionDetailClient({ session }: Props) {
               <p className="mt-4 text-sm text-violet-200">{message}</p>
             )}
 
-            {/* RSVP Confirmation & Calendar Export Dialog (#4953) */}
-            {(showCalendarPrompt || currentRsvp?.status === "GOING") && (
+            {/* Waitlist Status & Position Banner (#5035) */}
+            {currentRsvp?.status === "MAYBE" && waitlistPosition !== null && (
               <div
-                data-testid="rsvp-confirmation-dialog"
-                className="mt-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 rounded-2xl border border-emerald-500/30 bg-emerald-950/20 p-5 backdrop-blur-sm"
+                data-testid="waitlist-status-card"
+                className="mt-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 rounded-2xl border border-amber-500/30 bg-amber-950/20 p-5 backdrop-blur-sm"
               >
                 <div className="flex items-center gap-3">
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-500/20 text-emerald-300">
-                    <CalendarPlus className="h-5 w-5" />
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-amber-500/20 text-amber-300">
+                    <Clock3 className="h-5 w-5" />
                   </div>
                   <div>
-                    <h4 className="text-sm font-semibold text-emerald-200">
-                      RSVP Confirmed — You're attending!
+                    <h4 className="text-sm font-semibold text-amber-200">
+                      You are on the Waitlist
                     </h4>
                     <p className="text-xs text-zinc-400">
-                      Sync this session with Apple Calendar, Outlook, or Google Calendar.
+                      You will be automatically promoted if an attendee cancels their spot.
                     </p>
                   </div>
                 </div>
-                <a
-                  href={
-                    calendarDownloadUrl ||
-                    `/api/social/sessions/${session.slug}/rsvp?download=ics`
-                  }
-                  download={`${session.slug}.ics`}
-                  data-testid="add-to-calendar-btn"
-                  className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-xs font-semibold text-white shadow-sm transition hover:bg-emerald-500 active:scale-95"
+                <div className="flex items-center gap-2 rounded-xl bg-amber-500/10 border border-amber-500/30 px-4 py-2">
+                  <span className="text-xs text-amber-300/80 font-medium">Position</span>
+                  <span
+                    data-testid="waitlist-position-counter"
+                    className="text-sm font-bold text-amber-200 font-mono"
+                  >
+                    #{waitlistPosition} of {waitlisted.length}
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {/* RSVP Confirmation, Calendar Export & Ticket Display (#4953, #5066) */}
+            {(showCalendarPrompt || currentRsvp?.status === "GOING") && (
+              <div
+                data-testid="rsvp-confirmation-dialog"
+                className="mt-6 flex flex-col gap-5 rounded-2xl border border-emerald-500/30 bg-emerald-950/20 p-5 backdrop-blur-sm"
+              >
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-500/20 text-emerald-300">
+                      <CalendarPlus className="h-5 w-5" />
+                    </div>
+                    <div>
+                      <h4 className="text-sm font-semibold text-emerald-200">
+                        RSVP Confirmed — You're attending!
+                      </h4>
+                      <p className="text-xs text-zinc-400">
+                        Sync this session with Apple Calendar, Outlook, or Google Calendar.
+                      </p>
+                    </div>
+                  </div>
+                  <a
+                    href={
+                      calendarDownloadUrl ||
+                      `/api/social/sessions/${session.slug}/rsvp?download=ics`
+                    }
+                    download={`${session.slug}.ics`}
+                    data-testid="add-to-calendar-btn"
+                    className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-xs font-semibold text-white shadow-sm transition hover:bg-emerald-500 active:scale-95"
+                  >
+                    <CalendarPlus className="h-4 w-4" />
+                    <span>Add to Calendar (.ics)</span>
+                  </a>
+                </div>
+
+                {/* Attendee Admission Ticket Card (#5066) */}
+                <div
+                  data-testid="attendee-ticket-card"
+                  className="rounded-xl border border-emerald-500/25 bg-zinc-950/70 p-4 flex flex-col sm:flex-row items-center justify-between gap-4"
                 >
-                  <CalendarPlus className="h-4 w-4" />
-                  <span>Add to Calendar (.ics)</span>
-                </a>
+                  <div className="space-y-1.5 text-left w-full sm:w-auto">
+                    <div className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/10 px-2.5 py-0.5 text-[10px] font-semibold text-emerald-300 uppercase tracking-wider">
+                      <Ticket className="w-3 h-3" />
+                      <span>Attendee Admission Ticket</span>
+                    </div>
+                    <h5 className="text-sm font-bold text-white">
+                      {session.title}
+                    </h5>
+                    <div className="flex flex-col gap-1 text-xs text-zinc-400">
+                      <span className="flex items-center gap-1.5">
+                        <MapPin className="w-3.5 h-3.5 text-emerald-400" />
+                        <span data-testid="ticket-venue">{session.venue?.name}</span>
+                      </span>
+                      <span className="flex items-center gap-1.5">
+                        <CalendarDays className="w-3.5 h-3.5 text-emerald-400" />
+                        <span data-testid="ticket-date">
+                          {new Date(session.startsAt).toLocaleDateString(undefined, {
+                            weekday: "short",
+                            month: "short",
+                            day: "numeric",
+                            year: "numeric",
+                          })}
+                        </span>
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col items-center gap-1.5 bg-white p-2.5 rounded-xl shrink-0 shadow-sm">
+                    <div
+                      data-testid="ticket-qr-code"
+                      dangerouslySetInnerHTML={{ __html: ticketQrSvg }}
+                      className="flex items-center justify-center"
+                    />
+                    <span className="text-[9px] font-mono font-semibold text-zinc-700 tracking-wider uppercase">
+                      Scan to Check In
+                    </span>
+                  </div>
+                </div>
               </div>
             )}
 
@@ -450,15 +578,32 @@ export default function SessionDetailClient({ session }: Props) {
                   </h3>
                   <div className="mt-3 space-y-2">
                     {waitlisted.map((item, idx) => {
+                      const isCurrentUser = Boolean(user?.id && item.user.id === user.id);
                       const name =
                         [item.user.firstName, item.user.lastName]
                           .filter(Boolean)
                           .join(" ") || "WorkSphere member";
 
                       return (
-                        <div key={item.user.id} className="flex items-center justify-between text-xs text-zinc-400">
-                          <span className="truncate">{name}</span>
-                          <span className="font-mono text-zinc-500">#{idx + 1}</span>
+                        <div
+                          key={item.user.id}
+                          data-testid={isCurrentUser ? "user-waitlist-entry" : undefined}
+                          className={`flex items-center justify-between text-xs rounded-lg px-2 py-1.5 transition ${
+                            isCurrentUser
+                              ? "bg-amber-500/15 border border-amber-500/30 text-amber-200 font-medium"
+                              : "text-zinc-400"
+                          }`}
+                        >
+                          <span className="truncate">
+                            {name} {isCurrentUser && "(You)"}
+                          </span>
+                          <span
+                            className={`font-mono ${
+                              isCurrentUser ? "text-amber-300 font-bold" : "text-zinc-500"
+                            }`}
+                          >
+                            #{idx + 1}
+                          </span>
                         </div>
                       );
                     })}

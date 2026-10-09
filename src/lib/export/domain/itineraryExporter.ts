@@ -9,6 +9,7 @@
 import { PDFDocument, StandardFonts, rgb, PDFPage, PDFFont } from "pdf-lib";
 import { generateQRMatrix } from "@/lib/qr/svgQr";
 import { formatUserAddress } from "@/lib/pdfGenerator";
+import { wrapText } from "@/lib/pdf/generateBookingPdf";
 import crypto from "crypto";
 
 export interface BookingItineraryData {
@@ -21,6 +22,16 @@ export interface BookingItineraryData {
   status?: "CONFIRMED" | "PENDING" | "CANCELLED" | string | null;
   createdAt?: string | Date | null;
   timeZone?: string | null;
+  companyName?: string | null;
+  taxId?: string | null;
+  billingAddress?: string | null;
+  isTaxInvoice?: boolean;
+  billing?: {
+    companyName?: string | null;
+    taxId?: string | null;
+    billingAddress?: string | null;
+    isTaxInvoice?: boolean;
+  } | null;
   venue?: {
     id?: string;
     name?: string | null;
@@ -37,6 +48,9 @@ export interface BookingItineraryData {
     lastName?: string | null;
     email?: string | null;
     address?: unknown;
+    companyName?: string | null;
+    taxId?: string | null;
+    billingAddress?: string | null;
   } | null;
   customerEmail?: string | null;
   [key: string]: unknown;
@@ -265,11 +279,31 @@ export async function generateBookingItineraryPdf(
   const venueAddress = rawAddress === "No address provided" ? "Verified Workspace Address" : rawAddress;
 
   drawSafe(venueName, margin, y, 13, boldFont, darkNavy);
-  drawSafe(`· ${venueCategory}`, margin + font.widthOfTextAtSize(venueName, 13) + 8, y + 1, 9, boldFont, primaryBlue);
+  drawSafe(`· ${venueCategory}`, margin + font.widthOfTextAtSize(venueName.replace(/[^\x20-\x7E]/g, "?"), 13) + 8, y + 1, 9, boldFont, primaryBlue);
   y -= 16;
 
-  drawSafe(`Address: ${venueAddress}`, margin, y, 9, font, slateGrey);
-  y -= 16;
+  const addressLabel = "Address: ";
+  const addressFontSize = 9;
+  const addressLineHeight = 13;
+  const addressLabelWidth = font.widthOfTextAtSize(addressLabel, addressFontSize);
+  const maxAddressWidth = contentWidth - addressLabelWidth;
+  const addressLines = wrapText(venueAddress, font, addressFontSize, maxAddressWidth);
+
+  if (addressLines.length === 0) {
+    drawSafe(`${addressLabel}Verified Workspace Address`, margin, y, addressFontSize, font, slateGrey);
+    y -= 16;
+  } else {
+    for (let i = 0; i < addressLines.length; i++) {
+      if (i === 0) {
+        drawSafe(addressLabel, margin, y, addressFontSize, font, slateGrey);
+        drawSafe(addressLines[0], margin + addressLabelWidth, y, addressFontSize, font, slateGrey);
+      } else {
+        drawSafe(addressLines[i], margin + addressLabelWidth, y, addressFontSize, font, slateGrey);
+      }
+      y -= addressLineHeight;
+    }
+  }
+  y -= 4;
 
   // Amenities line
   const wifiText = booking.venue?.wifiQuality ? `High-Speed Wi-Fi (${booking.venue.wifiQuality}/5 Stars)` : "High-Speed Wi-Fi";
@@ -283,7 +317,11 @@ export async function generateBookingItineraryPdf(
   // ==========================================================================
   // SECTION 3: GUEST & CONTACT DETAILS
   // ==========================================================================
-  drawSafe("GUEST & ACCOUNT INFORMATION", margin, y, 11, boldFont, darkNavy);
+  const company = booking.companyName || booking.billing?.companyName || booking.user?.companyName;
+  const taxId = booking.taxId || booking.billing?.taxId || booking.user?.taxId;
+  const sectionTitle = (company || taxId) ? "BILL TO & GUEST INFORMATION" : "GUEST & ACCOUNT INFORMATION";
+
+  drawSafe(sectionTitle, margin, y, 11, boldFont, darkNavy);
   y -= 8;
   page.drawLine({
     start: { x: margin, y },
@@ -306,6 +344,18 @@ export async function generateBookingItineraryPdf(
   drawSafe("Contact Email:", margin, y, 9, font, slateGrey);
   drawSafe(customerEmail, margin + 90, y, 9.5, font, darkNavy);
   y -= 15;
+
+  if (company) {
+    drawSafe("Company:", margin, y, 9, font, slateGrey);
+    drawSafe(company, margin + 90, y, 9.5, boldFont, darkNavy);
+    y -= 15;
+  }
+
+  if (taxId) {
+    drawSafe("Tax / GST ID:", margin, y, 9, font, slateGrey);
+    drawSafe(taxId, margin + 90, y, 9.5, boldFont, darkNavy);
+    y -= 15;
+  }
 
   if (booking.user?.id) {
     drawSafe("Account ID:", margin, y, 9, font, slateGrey);
