@@ -185,6 +185,7 @@ export class DeskFavoritesService {
       deskId,
       isFree: true,
       status: "available",
+      currentReservationEndsAt: undefined,
       nextAvailableTime: "Now",
     });
 
