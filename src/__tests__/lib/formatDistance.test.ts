@@ -47,6 +47,12 @@ describe("formatDistance & distance unit conversion (#3775)", () => {
       expect(formatDistance(NaN, "METRIC")).toBe("--");
       expect(formatDistance(Infinity, "IMPERIAL")).toBe("--");
     });
+
+    it("clamps negative, non-finite, or excessive fractionDigits without throwing RangeError", () => {
+      expect(formatDistance(1.2345, "METRIC", { fractionDigits: -1 })).toBe("1 km");
+      expect(formatDistance(1.2345, "METRIC", { fractionDigits: NaN })).toBe("1.2 km");
+      expect(formatDistance(1.2345, "METRIC", { fractionDigits: 25 })).toBe("1.23450000000000000000 km");
+    });
   });
 
   describe("Locale auto-detection (detectDefaultDistanceUnit)", () => {

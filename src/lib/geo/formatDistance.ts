@@ -115,7 +115,11 @@ export function formatDistance(
   }
 
   const activeUnit = unit ?? (typeof window !== "undefined" ? getStoredDistanceUnit() : "METRIC");
-  const fractionDigits = options.fractionDigits ?? 1;
+  const rawDigits = options.fractionDigits;
+  const fractionDigits =
+    typeof rawDigits === "number" && Number.isFinite(rawDigits)
+      ? Math.max(0, Math.min(20, Math.floor(rawDigits)))
+      : 1;
   const useSubUnits = options.useSubUnits ?? true;
 
   if (activeUnit === "IMPERIAL") {
