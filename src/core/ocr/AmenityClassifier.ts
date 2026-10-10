@@ -1,7 +1,7 @@
-﻿/**
+/**
  * AmenityClassifier.ts
- * Tokenization, regex dictionary pattern matching, and confidence score scoring pipeline
- * for extracting venue amenities from OCR text, venue photos, flyers, or reviews.
+ * Combines tokenization, regex dictionary pattern matching, and confidence score scoring
+ * pipeline along with Groq LLM prompt formatting for venue amenity extraction.
  */
 
 export type AmenityCategory =
@@ -33,6 +33,21 @@ export interface ClassifiedAmenity {
 export interface ClassificationResult {
   amenities: ClassifiedAmenity[];
   tokens: string[];
+  rawText: string;
+}
+
+export interface ExtractedTextBlock {
+  text: string;
+  confidence: number;
+  boundingBox: { x: number; y: number; width: number; height: number };
+}
+
+export interface VenueAmenities {
+  hasWifi: boolean;
+  hasPowerOutlets: boolean;
+  hasVeganOptions: boolean;
+  hasEspressoMachine: boolean;
+  noiseLevel: "quiet" | "moderate" | "loud" | "unknown";
   rawText: string;
 }
 
@@ -102,7 +117,7 @@ export class AmenityClassifier {
   }
 
   /**
-   * Tokenizes text into normalized words and bigrams.
+   * Tokenizes text into normalized words.
    */
   public tokenize(text: string): string[] {
     if (!text) return [];
@@ -123,21 +138,21 @@ export class AmenityClassifier {
     for (const key of Object.keys(this.definitions) as AmenityCategory[]) {
       const def = this.definitions[key];
       const matchedKeywords: string[] = [];
-      let totalWeight = 0;
       let matchCount = 0;
 
       for (const pattern of def.patterns) {
         const match = rawText.match(pattern.regex);
         if (match) {
           matchedKeywords.push(match[0].trim());
-          totalWeight += pattern.weight;
           matchCount++;
         }
       }
 
       if (matchCount > 0) {
-        // Asymptotic confidence scoring formula: 1 - (1 - maxWeight) * 0.5^(matchCount - 1)
-        const highestWeight = Math.max(...def.patterns.filter(p => p.regex.test(rawText)).map(p => p.weight), 0);
+        const highestWeight = Math.max(
+          ...def.patterns.filter((p) => p.regex.test(rawText)).map((p) => p.weight),
+          0
+        );
         const frequencyBonus = Math.min(0.15, (matchCount - 1) * 0.05);
         const calculatedConfidence = Math.min(1.0, highestWeight + frequencyBonus);
 
@@ -152,7 +167,6 @@ export class AmenityClassifier {
       }
     }
 
-    // Sort by confidence descending
     classifiedAmenities.sort((a, b) => b.confidence - a.confidence);
 
     return {
@@ -160,6 +174,65 @@ export class AmenityClassifier {
       tokens,
       rawText,
     };
+  }
+
+  /**
+   * Formats extracted raw text into structured prompts for Groq LLM.
+   */
+  public generatePrompt(extractedBlocks: ExtractedTextBlock[]): string {
+    const rawText = extractedBlocks.map((b) => b.text).join("\n");
+
+    return `You are an expert venue analyst. Analyze the following text extracted from a cafe's menu or amenities board.
+    Determine if the venue has the following amenities:
+    1. WiFi (look for "WiFi", "Free Internet", passwords)
+    2. Power Outlets (look for "plugs", "charging", "laptop friendly")
+    3. Vegan Options (look for "vegan", "plant-based", "dairy-free")
+    4. Espresso Machine (look for "espresso", "latte", "cappuccino", "barista")
+    5. Noise Level (infer from words like "quiet zone", "library", "bustling", "live music")
+
+    Text:
+    """
+    ${rawText}
+    """
+
+    Respond ONLY with a valid JSON object matching this schema:
+    {
+      "hasWifi": boolean,
+      "hasPowerOutlets": boolean,
+      "hasVeganOptions": boolean,
+      "hasEspressoMachine": boolean,
+      "noiseLevel": "quiet" | "moderate" | "loud" | "unknown"
+    }`;
+  }
+
+  /**
+   * Parses Groq LLM JSON response into structured VenueAmenities.
+   */
+  public parseLLMResponse(llmOutput: string): VenueAmenities {
+    try {
+      const jsonMatch = llmOutput.match(/\{[\s\S]*\}/);
+      const jsonString = jsonMatch ? jsonMatch[0] : llmOutput;
+      const parsed = JSON.parse(jsonString);
+
+      return {
+        hasWifi: !!parsed.hasWifi,
+        hasPowerOutlets: !!parsed.hasPowerOutlets,
+        hasVeganOptions: !!parsed.hasVeganOptions,
+        hasEspressoMachine: !!parsed.hasEspressoMachine,
+        noiseLevel: parsed.noiseLevel || "unknown",
+        rawText: llmOutput,
+      };
+    } catch (e) {
+      console.error("Failed to parse LLM amenity response:", e);
+      return {
+        hasWifi: false,
+        hasPowerOutlets: false,
+        hasVeganOptions: false,
+        hasEspressoMachine: false,
+        noiseLevel: "unknown",
+        rawText: llmOutput,
+      };
+    }
   }
 }
 
