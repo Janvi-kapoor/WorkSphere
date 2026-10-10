@@ -1,34 +1,48 @@
-﻿/**
- * canvasExport.ts
- * Export utilities for collaborative whiteboard canvases.
- * Converts raster/vector canvas shape state into high-resolution transparent PNG blobs or scalable vector SVGs (#5615).
- */
-
 import type { ShapeData } from "@/hooks/useCanvasWhiteboard";
 
-export interface CanvasExportOptions {
+export interface ExportCanvasOptions {
   width?: number;
   height?: number;
-  pixelRatio?: number;
-  transparentBackground?: boolean;
-  backgroundColor?: string;
+  filename?: string;
+  scale?: number;
   padding?: number;
-  embedFonts?: boolean;
-}
-
-export interface BoundingBox {
-  minX: number;
-  minY: number;
-  maxX: number;
-  maxY: number;
 }
 
 /**
- * Computes tight bounding box across all active shapes on the canvas.
+ * Escapes characters for XML/SVG text nodes and attributes.
  */
-export function calculateCanvasBounds(shapes: ShapeData[], padding = 20): BoundingBox {
-  if (shapes.length === 0) {
-    return { minX: 0, minY: 0, maxX: 800, maxY: 600 };
+export function escapeXml(unsafe: string): string {
+  return unsafe.replace(/[<>&'"]/g, (c) => {
+    switch (c) {
+      case "<":
+        return "&lt;";
+      case ">":
+        return "&gt;";
+      case "&":
+        return "&amp;";
+      case "'":
+        return "&apos;";
+      case '"':
+        return "&quot;";
+      default:
+        return c;
+    }
+  });
+}
+
+/**
+ * Calculates the bounding box enclosing all active shapes on the whiteboard.
+ */
+export function calculateCanvasBounds(
+  shapes: ShapeData[],
+  fallbackWidth = 1200,
+  fallbackHeight = 800,
+  padding = 32,
+): { minX: number; minY: number; width: number; height: number } {
+  const activeShapes = shapes.filter((s) => !s.deleted && s.points.length >= 2);
+
+  if (activeShapes.length === 0) {
+    return { minX: 0, minY: 0, width: fallbackWidth, height: fallbackHeight };
   }
 
   let minX = Infinity;
@@ -36,212 +50,359 @@ export function calculateCanvasBounds(shapes: ShapeData[], padding = 20): Boundi
   let maxX = -Infinity;
   let maxY = -Infinity;
 
-  for (const s of shapes) {
-    if (s.deleted) continue;
-    const pts = s.points;
-    for (let i = 0; i < pts.length; i += 2) {
-      const x = pts[i];
-      const y = pts[i + 1];
-      if (x < minX) minX = x;
-      if (x > maxX) maxX = x;
-      if (y < minY) minY = y;
-      if (y > maxY) maxY = y;
+  for (const shape of activeShapes) {
+    const halfWidth = (shape.width || 2) / 2;
+
+    if (shape.type === "sticky") {
+      const sx = shape.points[0];
+      const sy = shape.points[1];
+      const right = shape.points[2] ?? sx + 220;
+      const bottom = shape.points[3] ?? sy + 160;
+      const w = Math.max(160, right - sx);
+      const h = Math.max(120, bottom - sy);
+
+      minX = Math.min(minX, sx);
+      minY = Math.min(minY, sy);
+      maxX = Math.max(maxX, sx + w);
+      maxY = Math.max(maxY, sy + h);
+      continue;
+    }
+
+    for (let i = 0; i < shape.points.length; i += 2) {
+      const x = shape.points[i];
+      const y = shape.points[i + 1];
+
+      if (Number.isFinite(x) && Number.isFinite(y)) {
+        minX = Math.min(minX, x - halfWidth);
+        minY = Math.min(minY, y - halfWidth);
+        maxX = Math.max(maxX, x + halfWidth);
+        maxY = Math.max(maxY, y + halfWidth);
+      }
     }
   }
 
-  if (minX === Infinity) {
-    return { minX: 0, minY: 0, maxX: 800, maxY: 600 };
+  if (!Number.isFinite(minX) || !Number.isFinite(minY)) {
+    return { minX: 0, minY: 0, width: fallbackWidth, height: fallbackHeight };
   }
 
+  // Anchor to 0,0 if shapes are in standard positive quadrant
+  const startX = Math.min(0, minX - padding);
+  const startY = Math.min(0, minY - padding);
+  const endX = Math.max(fallbackWidth, maxX + padding);
+  const endY = Math.max(fallbackHeight, maxY + padding);
+
   return {
-    minX: Math.max(0, minX - padding),
-    minY: Math.max(0, minY - padding),
-    maxX: maxX + padding,
-    maxY: maxY + padding,
+    minX: startX,
+    minY: startY,
+    width: Math.max(fallbackWidth, Math.ceil(endX - startX)),
+    height: Math.max(fallbackHeight, Math.ceil(endY - startY)),
   };
 }
 
 /**
- * Exports an HTML5 Canvas or shape array directly to a PNG Blob with optional transparency.
+ * Triggers a client-side file download for a generated blob or data URI.
  */
-export async function exportCanvasToBlob(
-  canvasOrShapes: HTMLCanvasElement | ShapeData[],
-  options: CanvasExportOptions = {}
-): Promise<Blob> {
-  const pixelRatio = options.pixelRatio ?? (typeof window !== "undefined" ? window.devicePixelRatio || 2 : 2);
-  const isTransparent = options.transparentBackground ?? true;
-  const bgColor = options.backgroundColor ?? "#1a1a2e";
+export function triggerDownload(url: string, filename: string): void {
+  if (typeof document === "undefined") return;
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+}
 
-  let canvas: HTMLCanvasElement;
+/**
+ * Draws rounded rectangle path for sticky notes on CanvasRenderingContext2D.
+ */
+function drawRoundRect(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  radius = 6,
+) {
+  ctx.beginPath();
+  ctx.moveTo(x + radius, y);
+  ctx.lineTo(x + width - radius, y);
+  ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
+  ctx.lineTo(x + width, y + height - radius);
+  ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+  ctx.lineTo(x + radius, y + height);
+  ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
+  ctx.lineTo(x, y + radius);
+  ctx.quadraticCurveTo(x, y, x + radius, y);
+  ctx.closePath();
+}
 
-  if (canvasOrShapes instanceof HTMLCanvasElement) {
-    canvas = canvasOrShapes;
-    if (isTransparent && !options.backgroundColor) {
-      return new Promise<Blob>((resolve, reject) => {
-        canvas.toBlob((blob) => {
-          if (blob) resolve(blob);
-          else reject(new Error("Failed to export canvas to PNG blob"));
-        }, "image/png");
-      });
-    }
-  }
+/**
+ * Exports whiteboard shapes to a transparent PNG file.
+ */
+export async function exportCanvasAsPng(
+  shapes: ShapeData[],
+  options: ExportCanvasOptions = {},
+): Promise<Blob | null> {
+  if (typeof document === "undefined") return null;
 
-  // If passed shapes or custom dimensions, create offscreen canvas
-  const shapes = Array.isArray(canvasOrShapes) ? canvasOrShapes : [];
-  const bounds = calculateCanvasBounds(shapes, options.padding ?? 20);
-  const width = options.width ?? (bounds.maxX - bounds.minX);
-  const height = options.height ?? (bounds.maxY - bounds.minY);
+  const bounds = calculateCanvasBounds(
+    shapes,
+    options.width,
+    options.height,
+    options.padding,
+  );
+  const width = options.width ?? bounds.width;
+  const height = options.height ?? bounds.height;
+  const scale = options.scale ?? 2;
+  const filename = options.filename ?? `whiteboard-${Date.now()}.png`;
 
-  const offscreen = document.createElement("canvas");
-  offscreen.width = width * pixelRatio;
-  offscreen.height = height * pixelRatio;
-  const ctx = offscreen.getContext("2d");
-  if (!ctx) throw new Error("Could not get 2D rendering context for export");
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(width * scale);
+  canvas.height = Math.round(height * scale);
 
-  ctx.scale(pixelRatio, pixelRatio);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
 
-  if (!isTransparent) {
-    ctx.fillStyle = bgColor;
-    ctx.fillRect(0, 0, width, height);
-  }
+  ctx.scale(scale, scale);
+  // Maintain true transparent canvas alpha without dark background fill
+  ctx.clearRect(0, 0, width, height);
 
-  ctx.translate(-bounds.minX, -bounds.minY);
+  const activeShapes = shapes.filter((s) => !s.deleted && s.points.length >= 2);
 
-  // Render shapes to offscreen context
-  for (const s of shapes) {
-    if (s.deleted || s.points.length < 2) continue;
+  for (const shape of activeShapes) {
     ctx.save();
-    ctx.strokeStyle = s.type === "eraser" ? (isTransparent ? "rgba(0,0,0,0)" : bgColor) : s.color;
-    ctx.lineWidth = s.width;
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-    ctx.globalAlpha = s.opacity ?? 1.0;
+    ctx.globalAlpha = shape.opacity ?? 1;
 
-    if (s.type === "pen" || s.type === "eraser") {
+    if (shape.type === "eraser") {
+      ctx.globalCompositeOperation = "destination-out";
+      ctx.lineWidth = shape.width;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
       ctx.beginPath();
-      ctx.moveTo(s.points[0], s.points[1]);
-      for (let i = 2; i < s.points.length; i += 2) {
-        ctx.lineTo(s.points[i], s.points[i + 1]);
+      ctx.moveTo(shape.points[0], shape.points[1]);
+      for (let i = 2; i < shape.points.length; i += 2) {
+        ctx.lineTo(shape.points[i], shape.points[i + 1]);
       }
       ctx.stroke();
-    } else if (s.type === "rect") {
-      const x = s.points[0];
-      const y = s.points[1];
-      const w = s.points[2] - x;
-      const h = s.points[3] - y;
+      ctx.restore();
+      continue;
+    }
+
+    ctx.strokeStyle = shape.color;
+    ctx.lineWidth = shape.width;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+
+    if (shape.type === "pen") {
+      ctx.beginPath();
+      ctx.moveTo(shape.points[0], shape.points[1]);
+      for (let i = 2; i < shape.points.length; i += 2) {
+        ctx.lineTo(shape.points[i], shape.points[i + 1]);
+      }
+      ctx.stroke();
+    } else if (shape.type === "line") {
+      ctx.beginPath();
+      ctx.moveTo(shape.points[0], shape.points[1]);
+      ctx.lineTo(shape.points[2], shape.points[3]);
+      ctx.stroke();
+    } else if (shape.type === "rect") {
+      const x = shape.points[0];
+      const y = shape.points[1];
+      const w = shape.points[2] - x;
+      const h = shape.points[3] - y;
       ctx.strokeRect(x, y, w, h);
-    } else if (s.type === "circle") {
-      const cx = s.points[0];
-      const cy = s.points[1];
-      const ex = s.points.length >= 4 ? s.points[2] : cx;
-      const ey = s.points.length >= 4 ? s.points[3] : cy;
+    } else if (shape.type === "circle") {
+      const cx = shape.points[0];
+      const cy = shape.points[1];
+      const ex = shape.points.length >= 4 ? shape.points[2] : cx;
+      const ey = shape.points.length >= 4 ? shape.points[3] : cy;
       const rx = Math.abs(ex - cx);
       const ry = Math.abs(ey - cy);
       ctx.beginPath();
       ctx.ellipse(cx, cy, rx || 1, ry || 1, 0, 0, Math.PI * 2);
       ctx.stroke();
-    } else if (s.type === "line") {
-      ctx.beginPath();
-      ctx.moveTo(s.points[0], s.points[1]);
-      ctx.lineTo(s.points[2], s.points[3]);
+    } else if (shape.type === "sticky") {
+      const x = shape.points[0];
+      const y = shape.points[1];
+      const right = shape.points[2] ?? x + 220;
+      const bottom = shape.points[3] ?? y + 160;
+      const w = Math.max(160, right - x);
+      const h = Math.max(120, bottom - y);
+
+      // Sticky note background
+      ctx.fillStyle = "#fef08a"; // Amber-100/Yellow-200
+      ctx.strokeStyle = "#eab308";
+      ctx.lineWidth = 1;
+      drawRoundRect(ctx, x, y, w, h, 6);
+      ctx.fill();
       ctx.stroke();
+
+      // Sticky note header
+      ctx.fillStyle = "#fde047";
+      ctx.beginPath();
+      ctx.moveTo(x + 6, y);
+      ctx.lineTo(x + w - 6, y);
+      ctx.quadraticCurveTo(x + w, y, x + w, y + 6);
+      ctx.lineTo(x + w, y + 24);
+      ctx.lineTo(x, y + 24);
+      ctx.lineTo(x, y + 6);
+      ctx.quadraticCurveTo(x, y, x + 6, y);
+      ctx.closePath();
+      ctx.fill();
+
+      // Header title
+      ctx.fillStyle = "#854d0e";
+      ctx.font = "bold 10px sans-serif";
+      ctx.fillText("STICKY NOTE", x + 8, y + 16);
+
+      // Text content preview
+      if (shape.text) {
+        ctx.fillStyle = "#1e293b";
+        ctx.font = "11px sans-serif";
+        const lines = shape.text.replace(/^[#*\-`\s]+/gm, "").split("\n");
+        let lineY = y + 40;
+        for (const line of lines) {
+          if (lineY > y + h - 10) break;
+          ctx.fillText(line.slice(0, 30), x + 8, lineY);
+          lineY += 15;
+        }
+      }
     }
+
     ctx.restore();
   }
 
-  return new Promise<Blob>((resolve, reject) => {
-    offscreen.toBlob((blob) => {
-      if (blob) resolve(blob);
-      else reject(new Error("Failed to generate offscreen PNG blob"));
+  return new Promise((resolve) => {
+    canvas.toBlob((blob) => {
+      if (blob) {
+        const url = URL.createObjectURL(blob);
+        triggerDownload(url, filename);
+        setTimeout(() => URL.revokeObjectURL(url), 2000);
+      }
+      resolve(blob);
     }, "image/png");
   });
 }
 
 /**
- * Exports whiteboard shapes to scalable vector XML SVG with embedded font definitions.
+ * Generates an SVG XML string representing the transparent whiteboard canvas.
  */
-export function exportCanvasToSvg(
+export function generateSvgString(
   shapes: ShapeData[],
-  options: CanvasExportOptions = {}
+  options: ExportCanvasOptions = {},
 ): string {
-  const bounds = calculateCanvasBounds(shapes, options.padding ?? 20);
-  const width = options.width ?? (bounds.maxX - bounds.minX);
-  const height = options.height ?? (bounds.maxY - bounds.minY);
-  const isTransparent = options.transparentBackground ?? true;
-  const bgColor = options.backgroundColor ?? "#1a1a2e";
+  const bounds = calculateCanvasBounds(
+    shapes,
+    options.width,
+    options.height,
+    options.padding,
+  );
+  const width = options.width ?? bounds.width;
+  const height = options.height ?? bounds.height;
+  const minX = bounds.minX;
+  const minY = bounds.minY;
 
-  let svgElements = "";
+  const activeShapes = shapes.filter((s) => !s.deleted && s.points.length >= 2);
+  const svgElements: string[] = [];
 
-  if (!isTransparent) {
-    svgElements += `<rect width="100%" height="100%" fill="${bgColor}" />\n`;
-  }
+  for (const shape of activeShapes) {
+    if (shape.type === "eraser") {
+      // Eraser removes strokes on transparent background
+      continue;
+    }
 
-  for (const s of shapes) {
-    if (s.deleted || s.points.length < 2) continue;
-    const stroke = s.type === "eraser" ? "none" : s.color;
-    const sw = s.width;
-    const opacity = s.opacity ?? 1.0;
+    const color = escapeXml(shape.color || "#ffffff");
+    const strokeWidth = shape.width || 2;
+    const opacity = shape.opacity ?? 1;
 
-    if (s.type === "pen") {
-      let d = `M ${s.points[0]} ${s.points[1]}`;
-      for (let i = 2; i < s.points.length; i += 2) {
-        d += ` L ${s.points[i]} ${s.points[i + 1]}`;
+    if (shape.type === "pen") {
+      const points = shape.points;
+      if (points.length >= 2) {
+        let pathData = `M ${points[0]} ${points[1]}`;
+        for (let i = 2; i < points.length; i += 2) {
+          pathData += ` L ${points[i]} ${points[i + 1]}`;
+        }
+        svgElements.push(
+          `<path d="${pathData}" stroke="${color}" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round" fill="none" opacity="${opacity}" />`,
+        );
       }
-      svgElements += `<path d="${d}" fill="none" stroke="${stroke}" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round" opacity="${opacity}" />\n`;
-    } else if (s.type === "rect") {
-      const x = Math.min(s.points[0], s.points[2]);
-      const y = Math.min(s.points[1], s.points[3]);
-      const w = Math.abs(s.points[2] - s.points[0]);
-      const h = Math.abs(s.points[3] - s.points[1]);
-      svgElements += `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="none" stroke="${stroke}" stroke-width="${sw}" opacity="${opacity}" />\n`;
-    } else if (s.type === "circle") {
-      const cx = s.points[0];
-      const cy = s.points[1];
-      const ex = s.points.length >= 4 ? s.points[2] : cx;
-      const ey = s.points.length >= 4 ? s.points[3] : cy;
+    } else if (shape.type === "line") {
+      svgElements.push(
+        `<line x1="${shape.points[0]}" y1="${shape.points[1]}" x2="${shape.points[2]}" y2="${shape.points[3]}" stroke="${color}" stroke-width="${strokeWidth}" stroke-linecap="round" opacity="${opacity}" />`,
+      );
+    } else if (shape.type === "rect") {
+      const x = Math.min(shape.points[0], shape.points[2]);
+      const y = Math.min(shape.points[1], shape.points[3]);
+      const w = Math.abs(shape.points[2] - shape.points[0]);
+      const h = Math.abs(shape.points[3] - shape.points[1]);
+      svgElements.push(
+        `<rect x="${x}" y="${y}" width="${w}" height="${h}" stroke="${color}" stroke-width="${strokeWidth}" fill="none" opacity="${opacity}" />`,
+      );
+    } else if (shape.type === "circle") {
+      const cx = shape.points[0];
+      const cy = shape.points[1];
+      const ex = shape.points.length >= 4 ? shape.points[2] : cx;
+      const ey = shape.points.length >= 4 ? shape.points[3] : cy;
       const rx = Math.abs(ex - cx) || 1;
       const ry = Math.abs(ey - cy) || 1;
-      svgElements += `<ellipse cx="${cx}" cy="${cy}" rx="${rx}" ry="${ry}" fill="none" stroke="${stroke}" stroke-width="${sw}" opacity="${opacity}" />\n`;
-    } else if (s.type === "line") {
-      svgElements += `<line x1="${s.points[0]}" y1="${s.points[1]}" x2="${s.points[2]}" y2="${s.points[3]}" stroke="${stroke}" stroke-width="${sw}" stroke-linecap="round" opacity="${opacity}" />\n`;
-    } else if (s.type === "sticky" && s.text) {
-      const x = s.points[0];
-      const y = s.points[1];
-      svgElements += `
-        <g transform="translate(${x}, ${y})">
-          <rect width="180" height="120" rx="6" fill="#fef08a" stroke="#ca8a04" stroke-width="1.5" />
-          <text x="12" y="24" font-family="'Inter', -apple-system, sans-serif" font-size="14" fill="#1c1917">${s.text}</text>
-        </g>\n`;
+      svgElements.push(
+        `<ellipse cx="${cx}" cy="${cy}" rx="${rx}" ry="${ry}" stroke="${color}" stroke-width="${strokeWidth}" fill="none" opacity="${opacity}" />`,
+      );
+    } else if (shape.type === "sticky") {
+      const x = shape.points[0];
+      const y = shape.points[1];
+      const right = shape.points[2] ?? x + 220;
+      const bottom = shape.points[3] ?? y + 160;
+      const w = Math.max(160, right - x);
+      const h = Math.max(120, bottom - y);
+
+      const lines = (shape.text ?? "Sticky note")
+        .replace(/^[#*\-`\s]+/gm, "")
+        .split("\n")
+        .slice(0, 6);
+
+      const textSpans = lines
+        .map(
+          (line, index) =>
+            `<tspan x="${x + 10}" y="${y + 42 + index * 16}">${escapeXml(line.slice(0, 32))}</tspan>`,
+        )
+        .join("");
+
+      svgElements.push(`
+    <g class="sticky-note" opacity="${opacity}">
+      <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="6" ry="6" fill="#fef08a" stroke="#eab308" stroke-width="1" />
+      <path d="M ${x + 6} ${y} L ${x + w - 6} ${y} A 6 6 0 0 1 ${x + w} ${y + 6} L ${x + w} ${y + 24} L ${x} ${y + 24} L ${x} ${y + 6} A 6 6 0 0 1 ${x + 6} ${y} Z" fill="#fde047" />
+      <text x="${x + 8}" y="${y + 16}" fill="#854d0e" font-family="sans-serif" font-size="10" font-weight="bold">STICKY NOTE</text>
+      <text fill="#1e293b" font-family="sans-serif" font-size="11">${textSpans}</text>
+    </g>`);
     }
   }
 
-  const fontDefs = options.embedFonts
-    ? `<defs>
-        <style>
-          @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600&amp;display=swap');
-          text { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
-        </style>
-      </defs>\n`
-    : "";
-
   return `<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="${bounds.minX} ${bounds.minY} ${width} ${height}" width="${width}" height="${height}">
-  ${fontDefs}
-  ${svgElements}
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="${minX} ${minY} ${width} ${height}" width="${width}" height="${height}">
+  <!-- WorkSphere Transparent Whiteboard Canvas Export -->
+  ${svgElements.join("\n  ")}
 </svg>`;
 }
 
 /**
- * Triggers instant browser client-side download for Blob or data string.
+ * Exports whiteboard shapes to a vector SVG file.
  */
-export function triggerFileDownload(data: Blob | string, filename: string): void {
-  const blob = typeof data === "string" ? new Blob([data], { type: "image/svg+xml;charset=utf-8" }) : data;
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = filename;
-  document.body.appendChild(anchor);
-  anchor.click();
-  document.body.removeChild(anchor);
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+export function exportCanvasAsSvg(
+  shapes: ShapeData[],
+  options: ExportCanvasOptions = {},
+): Blob {
+  const filename = options.filename ?? `whiteboard-${Date.now()}.svg`;
+  const svgContent = generateSvgString(shapes, options);
+  const blob = new Blob([svgContent], {
+    type: "image/svg+xml;charset=utf-8",
+  });
+
+  if (typeof URL !== "undefined" && typeof document !== "undefined") {
+    const url = URL.createObjectURL(blob);
+    triggerDownload(url, filename);
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  }
+
+  return blob;
 }
