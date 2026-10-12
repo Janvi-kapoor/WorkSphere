@@ -727,6 +727,16 @@ export function ChatPanel({
               maxLength={500}
               aria-label="Chat message"
               onChange={(e) => onInputChange?.(e.target.value.slice(0, 500))}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  const trimmed = (input || "").trim();
+                  if (!trimmed || trimmed.length === 0) {
+                    return;
+                  }
+                  e.currentTarget.form?.requestSubmit();
+                }
+              }}
               placeholder="Type a message..."
               className="flex-1 px-3 py-1.5 text-sm rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100"
             />
