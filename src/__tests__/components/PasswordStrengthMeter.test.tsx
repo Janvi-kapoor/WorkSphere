@@ -72,8 +72,22 @@ describe("PasswordStrengthMeter component", () => {
     expect(segments.length).toBe(4);
   });
 
-  it("has aria-live='polite' for accessibility", () => {
+  it("has aria-live='polite' and aria-atomic='true' for accessibility", () => {
     const { container } = render(<PasswordStrengthMeter password="test" />);
-    expect(container.querySelector('[aria-live="polite"]')).toBeInTheDocument();
+    const liveRegion = container.querySelector('[aria-live="polite"]');
+    expect(liveRegion).toBeInTheDocument();
+    expect(liveRegion).toHaveAttribute("aria-atomic", "true");
+  });
+
+  it("provides descriptive screen-reader text on score transitions", () => {
+    const { rerender } = render(<PasswordStrengthMeter password="abc" />);
+    expect(
+      screen.getByText("Password strength: Weak (1 out of 4)")
+    ).toBeInTheDocument();
+
+    rerender(<PasswordStrengthMeter password="SuperSecure99$!" />);
+    expect(
+      screen.getByText("Password strength: Strong (4 out of 4)")
+    ).toBeInTheDocument();
   });
 });

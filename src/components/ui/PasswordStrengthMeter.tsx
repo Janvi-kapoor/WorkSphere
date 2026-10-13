@@ -64,7 +64,7 @@ export function PasswordStrengthMeter({ password, className = "" }: PasswordStre
   const config = STRENGTH_CONFIG[strength];
 
   return (
-    <div className={`space-y-1.5 ${className}`} aria-live="polite" aria-label={`Password strength: ${config.label}`}>
+    <div className={`space-y-1.5 ${className}`}>
       {/* Segmented bar */}
       <div className="flex gap-1">
         {[1, 2, 3, 4].map((seg) => (
@@ -78,7 +78,14 @@ export function PasswordStrengthMeter({ password, className = "" }: PasswordStre
       </div>
 
       {/* Strength label and first feedback hint */}
-      <div className="flex items-center justify-between text-xs">
+      <div
+        className="flex items-center justify-between text-xs"
+        aria-live="polite"
+        aria-atomic="true"
+      >
+        <span className="sr-only">
+          Password strength: {config.label} ({score} out of 4)
+        </span>
         <span
           className={`font-semibold ${
             strength === "weak"   ? "text-red-500" :
@@ -86,6 +93,7 @@ export function PasswordStrengthMeter({ password, className = "" }: PasswordStre
             strength === "good"   ? "text-blue-600 dark:text-blue-400" :
             "text-green-600 dark:text-green-400"
           }`}
+          aria-hidden="true"
         >
           {config.label}
         </span>
