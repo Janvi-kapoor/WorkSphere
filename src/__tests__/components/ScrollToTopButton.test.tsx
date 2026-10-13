@@ -100,4 +100,14 @@ describe("ScrollToTopButton", () => {
     render(<ScrollToTopButton />);
     expect(document.getElementById("scroll-to-top-btn")).toBeInTheDocument();
   });
+
+  it("has keyboard focus ring and minimum touch target classes", () => {
+    render(<ScrollToTopButton />);
+    const btn = screen.getByRole("button", { name: "Scroll to top of page" });
+    expect(btn).toHaveClass("focus-visible:ring-2");
+    expect(btn).toHaveClass("focus-visible:ring-primary");
+    expect(btn).toHaveClass("focus-visible:outline-none");
+    expect(btn).toHaveClass("min-h-[44px]");
+    expect(btn).toHaveClass("min-w-[44px]");
+  });
 });
