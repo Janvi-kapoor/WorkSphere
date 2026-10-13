@@ -55,6 +55,7 @@ const AmbientSoundPlayer = dynamic(
 );
 import { AddToFolderModal } from "@/components/collections/AddToFolderModal";
 import { FolderPlus } from "lucide-react";
+import { MachSpeedBadge } from "@/components/ui/NoiseLevelBadge";
 import { useCurrency } from "@/context/CurrencyContext";
 import { useHoverPredictor } from "@/hooks/useHoverPredictor";
 import { getVenueHoursStatus } from "@/lib/venueHours";
@@ -67,6 +68,7 @@ import {
   calculateVenueSolarPhase,
   supportsCircadianLighting,
 } from "@/lib/geo/circadianLighting";
+import { useDataSaver } from "@/hooks/useDataSaver";
 
 interface VenueEnrichData {
   found: boolean;
@@ -107,6 +109,8 @@ interface VenueCardProps {
   searchQuery?: string;
   /** Optional timestamp override for computing local solar phase */
   currentTimestamp?: Date | number;
+  /** Optional override for Data Saver mode */
+  isDataSaver?: boolean;
 }
 
 interface VoteMetricState {
@@ -130,7 +134,12 @@ export function VenueCard({
   onReportMusicGenre,
   searchQuery = "",
   currentTimestamp,
+  isDataSaver: isDataSaverProp,
 }: VenueCardProps) {
+  const { isDataSaver: globalDataSaver } = useDataSaver();
+  const effectiveDataSaver =
+    typeof isDataSaverProp === "boolean" ? isDataSaverProp : globalDataSaver;
+
   const [isFavorited, setIsFavorited] = useState(false);
   const [isSavingFavorite, setIsSavingFavorite] = useState(false);
   const [enrichData, setEnrichData] = useState<VenueEnrichData | null>(null);
@@ -474,7 +483,7 @@ export function VenueCard({
   };
 
   const displayRating = enrichData?.rating ?? venue.rating ?? 0;
-  const photos = enrichData?.photos || [];
+  const photos = enrichData?.photos || venue.photos || [];
   const amenities = enrichData?.amenities;
 
   // Determine low confidence threshold parameters to trigger notice blocks
@@ -560,6 +569,9 @@ export function VenueCard({
               photos[photoIndex] || venue.name,
             )}
             unoptimized // External URLs from Foursquare
+            quality={effectiveDataSaver ? 30 : 75}
+            data-quality={effectiveDataSaver ? "low" : "high"}
+            data-datasaver={effectiveDataSaver ? "true" : "false"}
             onError={() => setPhotoError(true)}
             style={{
               viewTransitionName: getVenueCoverTransitionName(venue.id),
@@ -779,6 +791,13 @@ export function VenueCard({
             )}
           </div>
         )}
+
+        {/* Aerospace Mach Speed Classification Badge (#6175) */}
+        {venue.wifiSpeed ? (
+          <div className="flex items-center gap-2 mb-3">
+            <MachSpeedBadge downloadMbps={venue.wifiSpeed} size="sm" />
+          </div>
+        ) : null}
 
         {/* Hours */}
         {(() => {

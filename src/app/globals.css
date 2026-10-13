@@ -2,6 +2,71 @@
 
 @custom-variant dark (&:where(.dark, .dark *));
 
+@layer components {
+  .audio-eq-energy-slider {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 7rem;
+    height: 2rem;
+    margin: 0;
+    transform: translate(-50%, -50%) rotate(-90deg);
+    appearance: none;
+    background: transparent;
+    cursor: pointer;
+  }
+
+  .audio-eq-energy-slider::-webkit-slider-runnable-track {
+    height: 5px;
+    border: 1px solid rgb(52 211 153 / 35%);
+    border-radius: 9999px;
+    background: linear-gradient(90deg, rgb(6 78 59 / 75%), rgb(16 185 129 / 45%), rgb(6 78 59 / 75%));
+  }
+
+  .audio-eq-energy-slider::-moz-range-track {
+    height: 5px;
+    border: 1px solid rgb(52 211 153 / 35%);
+    border-radius: 9999px;
+    background: linear-gradient(90deg, rgb(6 78 59 / 75%), rgb(16 185 129 / 45%), rgb(6 78 59 / 75%));
+  }
+
+  .audio-eq-energy-slider::-webkit-slider-thumb {
+    width: 18px;
+    height: 18px;
+    margin-top: -7px;
+    appearance: none;
+    border: 2px solid rgb(187 247 208);
+    border-radius: 50%;
+    background: radial-gradient(circle, rgb(236 253 245) 0 20%, rgb(34 197 94) 45%, rgb(6 78 59) 100%);
+    box-shadow: 0 0 var(--energy-glow, 8px) rgb(74 222 128 / 85%), inset 0 0 5px rgb(220 252 231 / 80%);
+    transition: box-shadow 150ms ease;
+  }
+
+  .audio-eq-energy-slider::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    border: 2px solid rgb(187 247 208);
+    border-radius: 50%;
+    background: radial-gradient(circle, rgb(236 253 245) 0 20%, rgb(34 197 94) 45%, rgb(6 78 59) 100%);
+    box-shadow: 0 0 var(--energy-glow, 8px) rgb(74 222 128 / 85%), inset 0 0 5px rgb(220 252 231 / 80%);
+    transition: box-shadow 150ms ease;
+  }
+
+  .audio-eq-energy-slider:focus-visible {
+    outline: 2px solid rgb(187 247 208);
+    outline-offset: 4px;
+    border-radius: 9999px;
+  }
+
+  .audio-eq-energy-slider:focus-visible::-webkit-slider-thumb {
+    box-shadow: 0 0 0 3px rgb(3 7 18), 0 0 0 5px rgb(187 247 208), 0 0 var(--energy-glow, 8px) rgb(74 222 128 / 95%);
+  }
+
+  .audio-eq-energy-slider:focus-visible::-moz-range-thumb {
+    box-shadow: 0 0 0 3px rgb(3 7 18), 0 0 0 5px rgb(187 247 208), 0 0 var(--energy-glow, 8px) rgb(74 222 128 / 95%);
+  }
+}
+
 @layer utilities {
   :where(
     a,
@@ -75,9 +140,99 @@
       color-mix(in srgb, var(--primary-accent) 30%, transparent);
   }
 
+  /* ─── Hard-Light Construct Border Glow Utilities ─────────────────── */
+  .hard-light-construct {
+    position: relative;
+    border: 1px solid color-mix(in srgb, var(--primary-accent, #3b82f6) 75%, #ffffff);
+    box-shadow:
+      0 0 1px 1px color-mix(in srgb, var(--primary-accent, #3b82f6) 80%, #ffffff),
+      0 0 12px color-mix(in srgb, var(--primary-accent, #3b82f6) 45%, transparent),
+      0 0 24px color-mix(in srgb, var(--primary-accent, #3b82f6) 25%, transparent),
+      inset 0 0 12px color-mix(in srgb, var(--primary-accent, #3b82f6) 18%, transparent);
+    transition: box-shadow 0.25s ease, border-color 0.25s ease;
+  }
+
+  .hard-light-construct:hover {
+    border-color: color-mix(in srgb, var(--primary-accent, #3b82f6) 90%, #ffffff);
+    box-shadow:
+      0 0 2px 1.5px color-mix(in srgb, var(--primary-accent, #3b82f6) 95%, #ffffff),
+      0 0 16px color-mix(in srgb, var(--primary-accent, #3b82f6) 60%, transparent),
+      0 0 32px color-mix(in srgb, var(--primary-accent, #3b82f6) 35%, transparent),
+      inset 0 0 16px color-mix(in srgb, var(--primary-accent, #3b82f6) 28%, transparent);
+  }
+
+  .border-glow-construct {
+    border: 1px solid color-mix(in srgb, var(--primary-accent, #3b82f6) 70%, transparent);
+    box-shadow:
+      0 0 1px 1px color-mix(in srgb, var(--primary-accent, #3b82f6) 60%, transparent),
+      0 0 10px color-mix(in srgb, var(--primary-accent, #3b82f6) 40%, transparent),
+      inset 0 0 8px color-mix(in srgb, var(--primary-accent, #3b82f6) 20%, transparent);
+  }
+
+  .border-glow-construct-cyan {
+    border: 1px solid rgba(6, 182, 212, 0.75);
+    box-shadow:
+      0 0 1px 1px rgba(103, 232, 249, 0.9),
+      0 0 12px rgba(6, 182, 212, 0.5),
+      0 0 24px rgba(6, 182, 212, 0.25),
+      inset 0 0 12px rgba(6, 182, 212, 0.2);
+  }
+
+  .border-glow-construct-emerald {
+    border: 1px solid rgba(16, 185, 129, 0.75);
+    box-shadow:
+      0 0 1px 1px rgba(110, 231, 183, 0.9),
+      0 0 12px rgba(16, 185, 129, 0.5),
+      0 0 24px rgba(16, 185, 129, 0.25),
+      inset 0 0 12px rgba(16, 185, 129, 0.2);
+  }
+
+  .border-glow-construct-amber {
+    border: 1px solid rgba(245, 158, 11, 0.75);
+    box-shadow:
+      0 0 1px 1px rgba(252, 211, 77, 0.9),
+      0 0 12px rgba(245, 158, 11, 0.5),
+      0 0 24px rgba(245, 158, 11, 0.25),
+      inset 0 0 12px rgba(245, 158, 11, 0.2);
+  }
+
+  .hard-light-pulse {
+    animation: hardLightConstructPulse 3s ease-in-out infinite;
+  }
+
+  @keyframes hardLightConstructPulse {
+    0%, 100% {
+      box-shadow:
+        0 0 1px 1px color-mix(in srgb, var(--primary-accent, #3b82f6) 80%, #ffffff),
+        0 0 12px color-mix(in srgb, var(--primary-accent, #3b82f6) 40%, transparent),
+        0 0 24px color-mix(in srgb, var(--primary-accent, #3b82f6) 20%, transparent),
+        inset 0 0 10px color-mix(in srgb, var(--primary-accent, #3b82f6) 15%, transparent);
+    }
+    50% {
+      box-shadow:
+        0 0 2px 1.5px color-mix(in srgb, var(--primary-accent, #3b82f6) 95%, #ffffff),
+        0 0 18px color-mix(in srgb, var(--primary-accent, #3b82f6) 65%, transparent),
+        0 0 36px color-mix(in srgb, var(--primary-accent, #3b82f6) 35%, transparent),
+        inset 0 0 16px color-mix(in srgb, var(--primary-accent, #3b82f6) 30%, transparent);
+    }
+  }
+
   .dark .glass-card {
     @apply bg-zinc-900 border-zinc-800;
   }
+}
+
+/* Accessibility overrides for high-contrast mode */
+html.high-contrast .hard-light-construct,
+html.high-contrast .border-glow-construct,
+html.high-contrast .border-glow-construct-cyan,
+html.high-contrast .border-glow-construct-emerald,
+html.high-contrast .border-glow-construct-amber,
+html.high-contrast .hard-light-pulse {
+  box-shadow: none !important;
+  animation: none !important;
+  border-width: 2px !important;
+  border-style: solid !important;
 }
 
 /* ─── Accent Color System ─────────────────────────────────────────── */
@@ -96,6 +251,7 @@
   --contrast-interactive-active: #2563eb;
   --primary-accent: #3b82f6;
   --primary-accent-rgb: 59, 130, 246;
+  --accent-lantern: #00ff88;
   color-scheme: light;
 }
 
